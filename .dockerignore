@@ -1,0 +1,7 @@
+node_modules
+.git
+.env
+data
+dist
+.vinxi
+fast-whisper-env

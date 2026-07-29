@@ -1,0 +1,7 @@
+node_modules
+dist
+.vinxi
+data
+fast-whisper-env
+.env
+.DS_Store
