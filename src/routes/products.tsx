@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useConfig, useProject, getStageOverride, CLEAR_DOWNSTREAM } from "@/lib/store";
+import { useActiveProfile } from "@/lib/pipeline-profiles";
 import { extractProducts } from "@/lib/products.functions";
 import { resolvePromptTextById } from "@/lib/prompt-registry";
 import { searchAmazon, type AmazonMatch } from "@/lib/amazon.functions";
@@ -60,6 +61,20 @@ function ProductsPage() {
   const autoFetchedRef = useRef(false);
   const activity = useActivityLog();
 
+  const { active } = useActiveProfile();
+  const pOverrides = active.stages?.products?.overrides || {};
+  const amzConfig = {
+    mode: (pOverrides.amazonApiMode as string) || cfg.amazonApiMode || "creator",
+    useLambdaFallback: pOverrides.amazonUseLambdaFallback !== undefined 
+      ? Boolean(pOverrides.amazonUseLambdaFallback) 
+      : cfg.amazonUseLambdaFallback || false,
+    clientId: (pOverrides.amazonClientId as string) || cfg.amazonClientId || "",
+    clientSecret: (pOverrides.amazonClientSecret as string) || cfg.amazonClientSecret || "",
+    partnerTag: (pOverrides.amazonPartnerTag as string) || cfg.amazonPartnerTag || "",
+    region: (pOverrides.amazonRegion as string) || cfg.amazonRegion || "NA",
+    marketplace: (pOverrides.amazonMarketplace as string) || cfg.amazonMarketplace || "www.amazon.com",
+  } as any;
+
   const products = project.products ?? [];
   const amazon = project.amazon ?? {};
 
@@ -79,7 +94,13 @@ function ProductsPage() {
         try {
           const query = p.amazon_search_query?.trim() || [p.brand, p.name].filter(Boolean).join(" ").trim() || p.name;
           activity.log(`searching · ${query}`);
-          const r = await searchAmazon({ data: { query, limit: 3 } });
+          const r = await searchAmazon({ 
+            data: { 
+              query, 
+              limit: 3,
+              config: amzConfig
+            } 
+          });
           if (r.results.length) {
             next[p.name] = r.results;
             activity.log(`${p.name} · ${r.results.length} match${r.results.length === 1 ? "" : "es"}`, "ok");
@@ -125,7 +146,20 @@ function ProductsPage() {
     setFetchingAmazon(p.name);
     try {
       const query = p.amazon_search_query?.trim() || [p.brand, p.name].filter(Boolean).join(" ").trim() || p.name;
-      const r = await searchAmazon({ data: { query, limit: 3 } });
+      const r = await searchAmazon({ 
+        data: { 
+          query, 
+          limit: 3,
+          config: {
+            mode: cfg.amazonApiMode,
+            clientId: cfg.amazonClientId,
+            clientSecret: cfg.amazonClientSecret,
+            partnerTag: cfg.amazonPartnerTag,
+            region: cfg.amazonRegion,
+            marketplace: cfg.amazonMarketplace,
+          }
+        } 
+      });
       setProject({ amazon: { ...amazon, [p.name]: r.results } });
       toast.success("Amazon reference updated");
     } catch (e) {
@@ -143,7 +177,19 @@ function ProductsPage() {
     }
     setReplaceBusy(true);
     try {
-      const r = await fetchAmazonByAsins({ data: { urls: [replaceInput] } });
+      const r = await fetchAmazonByAsins({ 
+        data: { 
+          urls: [replaceInput],
+          config: {
+            mode: cfg.amazonApiMode,
+            clientId: cfg.amazonClientId,
+            clientSecret: cfg.amazonClientSecret,
+            partnerTag: cfg.amazonPartnerTag,
+            region: cfg.amazonRegion,
+            marketplace: cfg.amazonMarketplace,
+          }
+        } 
+      });
       if (!r.products.length || r.failed.length) {
         throw new Error(`Lookup failed for ${asin}`);
       }

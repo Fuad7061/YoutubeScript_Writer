@@ -186,7 +186,27 @@ function Index() {
       setProject({ url: "", mode: "amazon", amazonInputs: lines, affiliateTag: tag });
       activity.log(`affiliate tag: ${tag}`);
       activity.log(`resolving ${validCount} ASIN${validCount > 1 ? "s" : ""}…`);
-      const res = await fetchAmazonByAsins({ data: { urls: lines, tag } });
+      
+      const pOverrides = active.stages?.products?.overrides || {};
+      const amzConfig = {
+        mode: (pOverrides.amazonApiMode as string) || cfg.amazonApiMode || "creator",
+        useLambdaFallback: pOverrides.amazonUseLambdaFallback !== undefined 
+          ? Boolean(pOverrides.amazonUseLambdaFallback) 
+          : cfg.amazonUseLambdaFallback || false,
+        clientId: (pOverrides.amazonClientId as string) || cfg.amazonClientId || "",
+        clientSecret: (pOverrides.amazonClientSecret as string) || cfg.amazonClientSecret || "",
+        partnerTag: (pOverrides.amazonPartnerTag as string) || cfg.amazonPartnerTag || "",
+        region: (pOverrides.amazonRegion as string) || cfg.amazonRegion || "NA",
+        marketplace: (pOverrides.amazonMarketplace as string) || cfg.amazonMarketplace || "www.amazon.com",
+      } as any;
+
+      const res = await fetchAmazonByAsins({ 
+        data: { 
+          urls: lines, 
+          tag,
+          config: amzConfig
+        } 
+      });
       const format = res.products.length === 1 ? "deep-dive" : "listicle";
       activity.log(`loaded ${res.products.length} · failed ${res.failed.length}`, res.failed.length ? "warn" : "ok");
       setProject({

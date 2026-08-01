@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText } from "ai";
+import { generateText, generateObject } from "ai";
 import { z } from "zod";
 import { renderPrompt } from "./prompt-registry";
 import { resolveModel, runAi, type StageOverride } from "./ai-provider";
@@ -855,11 +855,11 @@ PACING & VISUAL CHOREOGRAPHY
    • Talking-head cutaways → mark each row as [CREATOR ON CAM] or [SOURCE CLIP] so the editor knows which footage plays.
    • Any custom format → treat it literally.
 2. MATH LIMIT (LLMs are bad at this — force yourself):
-   • Total spoken script = ~{{WORD_TARGET}} words (= {{TARGET}}s × 3 words/sec). Land inside {{LO}}–{{HI}}s.
-   • Each row is 1.5–3s. A {{TARGET}}s script has ~{{ROWS_MIN}}–{{ROWS_MAX}} rows.
-   • NEVER exceed 12 spoken words per row. Row-duration (sec) × 3 ≥ row-word-count.
-   • Every voiceover cell MUST start with "(Nw)" where N is the exact spoken word count of that line. Count words yourself.
-   • Every timestamp cell MUST show cumulative time (e.g. "0.0s – 3.0s · cum 3.0s"). Final cumulative MUST land inside {{LO}}–{{HI}}s. If not, cut a beat and recompute.
+    • Total spoken script = ~{{WORD_TARGET}} words (= {{TARGET}}s × 3 words/sec). Land inside {{LO}}–{{HI}}s.
+    • Each row is 1.5–3s. A {{TARGET}}s script has ~{{ROWS_MIN}}–{{ROWS_MAX}} rows.
+    • NEVER exceed 12 spoken words per row. Row-duration (sec) × 3 ≥ row-word-count.
+    • Every voiceover cell MUST start with "(Nw)" where N is the exact spoken word count of that line.
+    • Every timestamp cell MUST show cumulative time (e.g. "0.0s – 3.0s · cum 3.0s"). Final cumulative MUST land inside {{LO}}–{{HI}}s. If not, cut a beat and recompute.
 3. VOICEOVER CELL IS PURE SPOKEN TEXT ONLY (except the mandatory leading "(Nw)" tag). No emojis, no stage directions, no markdown, no bracketed notes — those all go in the Visual Choreography column.
 
 ===========================================
@@ -1085,22 +1085,11 @@ export const generateCommentaryScript = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const model = resolveModel(data.override as StageOverride | undefined);
     const prompt = buildCommentaryPromptPreview(data);
-    const { text } = await runAi("Commentary script", () => generateText({ model, temperature: 0.95, prompt }));
+    const { text } = await runAi("Commentary script", () => generateText({ model, temperature: 0.95, maxOutputTokens: 16384, prompt }));
     if (!text || !text.trim()) throw new Error("Commentary model returned an empty response");
     return { script: text, prompt };
   });
 
-// (Removed: suggestAngleAndTone + suggestToneForAngle. The commentary flow now
-// uses Mirror-derived knobs + optional user custom angle only — no AI angle
-// suggester. See /analyze Mirror tab and /commentary Custom Angle Override.)
-
-
-// ─────────── 4b. Mirror-source knob deriver ───────────
-// Reads the video draft + summary + scenes and returns knobs that MIRROR the
-// source's actual arc — used by Mirror Mode on /commentary. The angle it
-// returns is grounded (no wildcard metaphor systems), the tone matches the
-// draft's emotional register, and the hook archetype fits the draft's actual
-// opening beat.
 
 const MirrorInput = z.object({
   meta: MetaShape,
@@ -1127,53 +1116,7 @@ export type MirrorKnobs = {
   reasoning: string;
 };
 
-/**
- * Robustly extract a JSON object from a model response that may include
- * markdown fences, leading/trailing prose, or a stray trailing comma.
- * Returns the parsed value, or null if nothing parseable was found.
- */
-function extractJsonObject(raw: string): unknown | null {
-  if (!raw) return null;
-  let text = raw.trim();
-  // Strip ```json / ``` fences
-  text = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  // Fast path
-  const tryParse = (s: string) => {
-    try { return JSON.parse(s); } catch { return undefined; }
-  };
-  const direct = tryParse(text);
-  if (direct !== undefined) return direct;
-  // Locate first balanced {...} — walk with brace depth, respecting strings.
-  const start = text.indexOf("{");
-  if (start < 0) return null;
-  let depth = 0, inStr = false, esc = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') { inStr = true; continue; }
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        const slice = text.slice(start, i + 1);
-        const parsed = tryParse(slice) ?? tryParse(slice.replace(/,\s*([}\]])/g, "$1"));
-        if (parsed !== undefined) return parsed;
-        break;
-      }
-    }
-  }
-  // Last-resort greedy match
-  const greedy = text.match(/\{[\s\S]*\}/);
-  if (greedy) {
-    return tryParse(greedy[0]) ?? tryParse(greedy[0].replace(/,\s*([}\]])/g, "$1")) ?? null;
-  }
-  return null;
-}
+
 
 /**
  * Placeholders: {{DRAFT_MODE_NOTE}}, {{DERIVED_LENGTH}},
@@ -1336,14 +1279,6 @@ export const deriveMirrorKnobs = createServerFn({ method: "POST" })
       return subs[normalized] ?? m;
     });
 
-    const { text } = await runAi("Video draft (text fallback)", () => generateText({ model, temperature: 0.4, prompt }));
-    const parsed = extractJsonObject(text);
-    if (!parsed) {
-      const preview = (text ?? "").trim().slice(0, 400).replace(/\s+/g, " ");
-      throw new Error(
-        `Mirror deriver returned no parseable JSON. Model preview: ${preview || "(empty response)"}`,
-      );
-    }
     const Shape = z.object({
       angle: z.string().min(4),
       tone: z.string().min(4),
@@ -1358,7 +1293,14 @@ export const deriveMirrorKnobs = createServerFn({ method: "POST" })
       briefAddendum: z.string().min(10),
       reasoning: z.string().min(4),
     });
-    const out = Shape.parse(parsed);
+
+    const { object: out } = await runAi("Video draft (text fallback)", () => generateObject({
+      model,
+      temperature: 0.4,
+      maxOutputTokens: 16384,
+      schema: Shape,
+      prompt
+    }));
     // Belt-and-suspenders: clamp to the supported window so a stray model
     // response can't crash the pipeline.
     out.lengthTargetSec = Math.max(3, Math.min(180, Math.round(out.lengthTargetSec)));

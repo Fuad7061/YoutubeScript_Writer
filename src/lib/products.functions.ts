@@ -1,9 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText } from "ai";
+import { generateObject } from "ai";
 import { z } from "zod";
 import { renderPrompt } from "./prompt-registry";
 import { resolveModel, type StageOverride } from "./ai-provider";
-
 const ProductSchema = z.object({
   products: z.array(
     z.object({
@@ -35,19 +34,6 @@ const Input = z.object({
   override: z.any().optional(),
 });
 
-function extractJson(raw: string): unknown {
-  let s = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  if (!s.startsWith("{") && !s.startsWith("[")) {
-    const o = s.indexOf("{");
-    const a = s.indexOf("[");
-    const useArr = a !== -1 && (o === -1 || a < o);
-    const start = useArr ? a : o;
-    const end = useArr ? s.lastIndexOf("]") : s.lastIndexOf("}");
-    if (start === -1 || end <= start) throw new Error("No JSON in response");
-    s = s.slice(start, end + 1);
-  }
-  return JSON.parse(s);
-}
 
 export const DEFAULT_PRODUCTS_EXTRACT_TEMPLATE = `You are a product research assistant specializing in Amazon affiliate marketing.
 
@@ -110,13 +96,15 @@ export const extractProducts = createServerFn({ method: "POST" })
       "{{TRANSCRIPT}}": data.transcript.slice(0, 50000),
     });
 
-    const { text } = await generateText({
+    const { object } = await generateObject({
       model,
       temperature: 0.2,
+      maxOutputTokens: 16384,
+      schema: ProductSchema,
       prompt,
     });
 
-    const parsed = ProductSchema.parse(extractJson(text));
+    const parsed = object;
     // Drop low-confidence noise and require a mentioned_context (grounds relevance)
     const filtered = parsed.products.filter(
       (p) =>

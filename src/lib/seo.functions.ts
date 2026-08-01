@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText } from "ai";
+import { generateObject } from "ai";
 import { z } from "zod";
 import { renderPrompt } from "./prompt-registry";
 import { resolveModel, type StageOverride } from "./ai-provider";
@@ -32,19 +32,6 @@ const SeoSchema = z.object({
   tags: z.array(z.string()),
   chapters: z.string(),
 });
-
-function extractJson(raw: string): unknown {
-  let s = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  if (!s.startsWith("{") && !s.startsWith("[")) {
-    const o = s.indexOf("{"), a = s.indexOf("[");
-    const useArr = a !== -1 && (o === -1 || a < o);
-    const start = useArr ? a : o;
-    const end = useArr ? s.lastIndexOf("]") : s.lastIndexOf("}");
-    if (start === -1 || end <= start) throw new Error("No JSON in response");
-    s = s.slice(start, end + 1);
-  }
-  return JSON.parse(s);
-}
 
 function resolveLinks(
   products: z.infer<typeof ProductInput>[],
@@ -167,13 +154,15 @@ export const generateSeo = createServerFn({ method: "POST" })
       "{{SCRIPT}}": data.script.slice(0, 8000),
     });
 
-    const { text } = await generateText({
+    const { object } = await generateObject({
       model,
       temperature: 0.5,
+      maxOutputTokens: 16384,
+      schema: SeoSchema,
       prompt,
     });
 
-    const parsed = SeoSchema.parse(extractJson(text));
+    const parsed = object;
     parsed.description = fillLinkPlaceholders(parsed.description, links);
     parsed.chapters = fillLinkPlaceholders(parsed.chapters, links);
     return parsed;

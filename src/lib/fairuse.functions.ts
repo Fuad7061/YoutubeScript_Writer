@@ -106,6 +106,7 @@ export const generateFairUse = createServerFn({ method: "POST" })
     const { text } = await generateText({
       model,
       temperature: 0.3,
+      maxOutputTokens: 16384,
       prompt,
     });
     return { fairuse: text };

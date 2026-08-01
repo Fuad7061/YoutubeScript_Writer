@@ -401,6 +401,6 @@ export const generateScript = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const model = resolveModel(data.override as StageOverride | undefined);
     const prompt = buildScriptPrompt(data);
-    const { text } = await generateText({ model, temperature: 0.8, prompt });
+    const { text } = await generateText({ model, temperature: 0.8, maxOutputTokens: 16384, prompt });
     return { script: text, prompt };
   });

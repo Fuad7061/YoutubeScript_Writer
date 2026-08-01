@@ -9,6 +9,15 @@ const DEFAULT_TAG = "consecho-20";
 const Input = z.object({
   urls: z.array(z.string().min(1)).min(1).max(20),
   tag: z.string().optional(),
+  config: z.object({
+    mode: z.enum(["creator", "lambda"]),
+    useLambdaFallback: z.boolean().optional(),
+    clientId: z.string().optional(),
+    clientSecret: z.string().optional(),
+    partnerTag: z.string().optional(),
+    region: z.enum(["NA", "EU", "FE"]).optional(),
+    marketplace: z.string().optional(),
+  }).optional(),
 });
 
 const ASIN_RE = /(?:\/dp\/|\/gp\/product\/|\/gp\/aw\/d\/|\/product\/|^)([A-Z0-9]{10})(?:[/?]|$)/i;
@@ -48,6 +57,8 @@ function shortQuery(brand?: string, title?: string): string {
   return parts.join(" ").trim();
 }
 
+import { getCreatorsItems, type CreatorSearchItem, type CreatorConfig } from "./amazon-creators";
+
 export const fetchAmazonByAsins = createServerFn({ method: "POST" })
   .inputValidator((i: unknown) => Input.parse(i))
   .handler(async ({ data }): Promise<{
@@ -75,6 +86,76 @@ export const fetchAmazonByAsins = createServerFn({ method: "POST" })
       throw new Error("No valid ASINs/URLs found. Paste amazon.com product URLs or bare 10-char ASINs.");
     }
 
+    const products: Product[] = [];
+    const amazon: Record<string, AmazonMatch[]> = {};
+    const failed: string[] = [...failedParse];
+
+    if (data.config?.mode === "creator") {
+      const cfg: CreatorConfig = {
+        clientId: data.config.clientId || "",
+        clientSecret: data.config.clientSecret || "",
+        partnerTag: data.config.partnerTag || tag,
+        region: (data.config.region || "NA") as any,
+        marketplace: data.config.marketplace || "www.amazon.com",
+      };
+
+      try {
+        const items = await getCreatorsItems(asins, cfg);
+        const itemMap = new Map<string, CreatorSearchItem>();
+        for (const item of items) {
+          if (item.asin) itemMap.set(item.asin.toUpperCase(), item);
+        }
+
+        for (const asin of asins) {
+          const item = itemMap.get(asin);
+          if (!item) {
+            failed.push(asin);
+            products.push({
+              name: `Amazon product ${asin}`,
+              affiliate_url: `https://www.amazon.com/dp/${asin}?tag=${encodeURIComponent(cfg.partnerTag)}`,
+              amazon_search_query: asin,
+              confidence: 0.5,
+              mentioned_context: `Direct Amazon input — lookup failed for ASIN ${asin}`,
+            });
+            continue;
+          }
+
+          const name = item.itemInfo?.title?.displayValue || `Amazon product ${asin}`;
+          const features = item.itemInfo?.features?.displayValues || [];
+          const price = item.offersV2?.listings?.[0]?.price?.money?.displayAmount;
+          const url = item.detailPageURL || `https://www.amazon.com/dp/${asin}?tag=${encodeURIComponent(cfg.partnerTag)}`;
+
+          products.push({
+            name,
+            description: features.slice(0, 2).join(" • ") || features[0] || "",
+            key_feature: features[0] || "",
+            estimated_price: price,
+            affiliate_url: url,
+            amazon_search_query: shortQuery(undefined, name) || asin,
+            mentioned_context: `Direct Amazon input (ASIN ${asin})`,
+            confidence: 1,
+          });
+
+          amazon[name] = [{
+            title: name,
+            price: price,
+            image: item.images?.primary?.small?.url,
+            affiliateUrl: url,
+            features,
+            rating: item.score,
+          }];
+        }
+        return { products, amazon, asins, failed };
+      } catch (err: any) {
+        if (!data.config.useLambdaFallback) {
+          throw err;
+        }
+        console.warn(`Creators API failed (${err.message}), falling back to Lambda for ASINs: ${asins.join(",")}`);
+      }
+    }
+
+
+
     const results = await Promise.allSettled(
       asins.map(async (asin) => {
         const url = `${AMAZON_LAMBDA}/?q=${asin}&tag=${encodeURIComponent(tag)}&page=1`;
@@ -91,10 +172,6 @@ export const fetchAmazonByAsins = createServerFn({ method: "POST" })
         return { asin, p };
       }),
     );
-
-    const products: Product[] = [];
-    const amazon: Record<string, AmazonMatch[]> = {};
-    const failed: string[] = [...failedParse];
 
     results.forEach((r, i) => {
       const asin = asins[i];

@@ -263,7 +263,7 @@ export const enhanceVoiceoverScript = createServerFn({ method: "POST" })
     });
     // Commentary needs a wider comedic range; product read stays tighter.
     const temperature = isCommentary ? 0.85 : 0.7;
-    const { text } = await generateText({ model, temperature, prompt });
+    const { text } = await generateText({ model, temperature, maxOutputTokens: 16384, prompt });
     const parsed = parseEnhancement(text, "gemini");
     {
       // Gemini path (product OR commentary): scrub forbidden quiet tags and

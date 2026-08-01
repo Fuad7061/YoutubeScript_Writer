@@ -122,14 +122,17 @@ async function probeDurationViaVideo(source: Blob | string): Promise<number> {
   video.src = url;
   try {
     await new Promise<void>((resolve, reject) => {
+      let timeoutId: NodeJS.Timeout;
       const ok = () => { cleanup(); resolve(); };
       const err = () => { cleanup(); reject(new Error("metadata load failed")); };
       const cleanup = () => {
+        clearTimeout(timeoutId);
         video.removeEventListener("loadedmetadata", ok);
         video.removeEventListener("error", err);
       };
       video.addEventListener("loadedmetadata", ok);
       video.addEventListener("error", err);
+      timeoutId = setTimeout(() => err(), 5000);
     });
     return finite(video.duration);
   } catch {
@@ -204,12 +207,21 @@ async function extractViaVideoElement(
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const ok = () => { video.removeEventListener("loadeddata", ok); video.removeEventListener("error", err); resolve(); };
-      const err = () => { video.removeEventListener("loadeddata", ok); video.removeEventListener("error", err); reject(new Error("video load failed")); };
+      let timeoutId: NodeJS.Timeout;
+      const cleanupListeners = () => {
+        clearTimeout(timeoutId);
+        video.removeEventListener("loadeddata", ok);
+        video.removeEventListener("error", err);
+      };
+      const ok = () => { cleanupListeners(); resolve(); };
+      const err = () => { cleanupListeners(); reject(new Error("video load failed")); };
       video.addEventListener("loadeddata", ok);
       video.addEventListener("error", err);
-      // some browsers need a nudge
-      setTimeout(() => { if (video.readyState >= 2) ok(); }, 500);
+      // some browsers need a nudge or might hang indefinitely
+      timeoutId = setTimeout(() => {
+        if (video.readyState >= 2) ok();
+        else err();
+      }, 5000);
     });
 
     const vw = video.videoWidth || 640;
@@ -475,11 +487,20 @@ async function extractAtTimesViaVideoElement(
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const ok = () => { video.removeEventListener("loadeddata", ok); video.removeEventListener("error", err); resolve(); };
-      const err = () => { video.removeEventListener("loadeddata", ok); video.removeEventListener("error", err); reject(new Error("video load failed")); };
+      let timeoutId: NodeJS.Timeout;
+      const cleanupListeners = () => {
+        clearTimeout(timeoutId);
+        video.removeEventListener("loadeddata", ok);
+        video.removeEventListener("error", err);
+      };
+      const ok = () => { cleanupListeners(); resolve(); };
+      const err = () => { cleanupListeners(); reject(new Error("video load failed")); };
       video.addEventListener("loadeddata", ok);
       video.addEventListener("error", err);
-      setTimeout(() => { if (video.readyState >= 2) ok(); }, 500);
+      timeoutId = setTimeout(() => {
+        if (video.readyState >= 2) ok();
+        else err();
+      }, 5000);
     });
 
     const vw = video.videoWidth || 640;

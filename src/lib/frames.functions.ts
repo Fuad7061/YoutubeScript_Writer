@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText } from "ai";
+import { generateObject } from "ai";
 import { z } from "zod";
 import { renderPrompt } from "./prompt-registry";
 import { resolveModel, type StageOverride } from "./ai-provider";
@@ -23,12 +23,7 @@ const THUMBS = [
   { key: "hq3", label: "end" },
 ];
 
-function extractJson(raw: string): unknown {
-  let s = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  const o = s.indexOf("{"), end = s.lastIndexOf("}");
-  if (o === -1 || end <= o) throw new Error("No JSON");
-  return JSON.parse(s.slice(o, end + 1));
-}
+
 
 export const DEFAULT_FRAME_DESCRIBE_TEMPLATE = `Describe this YouTube video frame. Return ONLY valid JSON:
 {"description":"one paragraph","scene":"short label","products_visible":["item1","item2"]}`;
@@ -46,9 +41,11 @@ export const analyzeFrames = createServerFn({ method: "POST" })
       THUMBS.map(async (t) => {
         const url = `https://i.ytimg.com/vi/${data.videoId}/${t.key}.jpg`;
         try {
-          const { text } = await generateText({
+          const { object: parsed } = await generateObject({
             model,
             temperature: 0.3,
+            maxOutputTokens: 16384,
+            schema: FrameSchema,
             messages: [
               {
                 role: "user",
@@ -59,7 +56,6 @@ export const analyzeFrames = createServerFn({ method: "POST" })
               },
             ],
           });
-          const parsed = FrameSchema.parse(extractJson(text));
           return { url, timestamp: t.label, ...parsed };
         } catch (e) {
           return { url, timestamp: t.label, description: `(analysis failed: ${(e as Error).message})`, products_visible: [] };

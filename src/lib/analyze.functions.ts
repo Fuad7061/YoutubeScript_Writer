@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText, APICallError } from "ai";
+import { generateObject, APICallError } from "ai";
 import { z } from "zod";
 import { resolveModel, resolveFallbackModel, runAi, type StageOverride } from "./ai-provider";
 import type { LanguageModel } from "ai";
@@ -11,13 +11,13 @@ import type { LanguageModel } from "ai";
  * empty message. We back off briefly and try again before giving up so
  * the caller sees a real, descriptive error instead of `<none>`.
  */
-async function generateTextWithRetry(
+async function generateObjectWithRetry<T>(
   label: string,
-  args: Parameters<typeof generateText>[0],
+  args: any,
   attempts = 3,
   timeoutMs = 90_000,
   fallbackModel?: LanguageModel | null,
-): Promise<Awaited<ReturnType<typeof generateText>>> {
+) {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     const attemptLabel = `${label} (attempt ${i + 1}/${attempts})`;
@@ -25,23 +25,12 @@ async function generateTextWithRetry(
     const timer = setTimeout(() => ctrl.abort(new Error(`${label}: timed out after ${timeoutMs}ms`)), timeoutMs);
     try {
       const res = await runAi(attemptLabel, () =>
-        generateText({ ...args, abortSignal: ctrl.signal }),
+        generateObject({ ...args, abortSignal: ctrl.signal }),
       );
-      if (!res.text || !res.text.trim()) {
-        const raw = (res as unknown as { response?: { body?: unknown } }).response?.body;
-        const reasoning =
-          (raw as { choices?: Array<{ message?: { reasoning_content?: string } }> } | undefined)
-            ?.choices?.[0]?.message?.reasoning_content ?? "";
-        if (reasoning && reasoning.trim().length > 0) {
-          const err = new Error(
-            `${label}: the selected model returned only internal reasoning (${reasoning.length} chars) and no final answer.`,
-          );
-          (err as Error & { nonRetryable?: boolean }).nonRetryable = true;
-          throw err;
-        }
+      if (!res.object) {
         throw new Error(`${label}: empty response from model`);
       }
-      return res;
+      return res as unknown as { object: T };
     } catch (e) {
       lastErr = e;
       const msg = (e as Error)?.message || "";
@@ -53,7 +42,7 @@ async function generateTextWithRetry(
           status === 408 ||
           status === 429 ||
           status >= 500 ||
-          /empty response|invalid json|network|timeout|<none>|fetch failed|aborted/i.test(msg));
+          /empty response|invalid json|network|timeout|<none>|fetch failed|aborted|validation/i.test(msg));
       console.warn(`[analyze] ${attemptLabel} failed:`, msg || e);
       if (!retryable || i === attempts - 1) break;
       await new Promise((r) => setTimeout(r, 800 * (i + 1) + Math.floor(Math.random() * 400)));
@@ -69,9 +58,9 @@ async function generateTextWithRetry(
     const fallbackTimer = setTimeout(() => fallbackCtrl.abort(new Error(`${label}: fallback timed out after ${timeoutMs}ms`)), timeoutMs);
     try {
       const res = await runAi(`${label} (fallback)`, () =>
-        generateText({ ...args, model: fallbackModel, abortSignal: fallbackCtrl.signal }),
+        generateObject({ ...args, model: fallbackModel, abortSignal: fallbackCtrl.signal }),
       );
-      if (res.text && res.text.trim()) {
+      if (res.object) {
         return res;
       }
     } catch (fbErr) {
@@ -119,13 +108,10 @@ export type FrameBatchResult = {
   batchSummary: string;
 };
 
-function extractJson(raw: string): unknown {
-  let s = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  const o = s.indexOf("{");
-  const e = s.lastIndexOf("}");
-  if (o === -1 || e <= o) throw new Error("no JSON in model output");
-  return JSON.parse(s.slice(o, e + 1));
-}
+const FrameBatchSchema = z.object({
+  frames: z.array(z.object({ t: z.number(), visual: z.string(), onScreenText: z.string().optional() })),
+  batchSummary: z.string()
+});
 
 /**
  * Normalize any angle shape into a plain string.
@@ -192,11 +178,13 @@ export const analyzeFrameBatch = createServerFn({ method: "POST" })
       "{{TIMESTAMPS}}": data.frames.map((f) => f.t.toFixed(1)).join(", "),
     });
 
-    const { text } = await generateTextWithRetry(
+    const res = await generateObjectWithRetry(
       "frame batch caption",
       {
         model,
         temperature: 0.2,
+        maxOutputTokens: 16384,
+        schema: FrameBatchSchema,
         messages: [
           {
             role: "user",
@@ -211,15 +199,12 @@ export const analyzeFrameBatch = createServerFn({ method: "POST" })
         ],
       },
       3,
-      90_000,
+      45_000,
       fallbackModel,
     );
+    const parsed = (res.object ?? {}) as any;
 
     try {
-      const parsed = extractJson(text) as {
-        frames: { t: number; visual: string; onScreenText?: string }[];
-        batchSummary: string;
-      };
       return { frameCaptions: parsed.frames ?? [], batchSummary: parsed.batchSummary ?? "" };
     } catch (e) {
       // Degrade gracefully — never crash the pipeline on a single bad batch
@@ -415,16 +400,46 @@ export const mergeAnalysis = createServerFn({ method: "POST" })
       "{{USER_CORRECTIONS}}": correctionsText ? correctionsText.slice(0, 4000) : "(none)",
     });
 
-    const { text } = await generateTextWithRetry("final report merge", { model, temperature: 0.3, maxOutputTokens: 8000, prompt: promptText });
+    const MergeAnalysisSchema = z.object({
+      summary: z.string(),
+      hookMoments: z.array(z.object({ t: z.number(), description: z.string(), role: z.enum(["sympathetic", "villain", "hero", "neutral", "opening", "attack", "hero_save", "payoff", "cta"]).optional() })),
+      scenes: z.array(z.object({
+        start: z.number(),
+        end: z.number(),
+        visual: z.string(),
+        spoken: z.string().optional(),
+        onScreenText: z.string().optional(),
+        keyTakeaway: z.string(),
+        beatType: z.string().optional()
+      })),
+      topics: z.array(z.string()),
+      entities: z.array(z.string()),
+      tone: z.string(),
+      pacing: z.string(),
+      targetAudience: z.string(),
+      clipType: z.string().optional(),
+      emotionalAnchor: z.object({
+        focalDetail: z.string(),
+        pivotAction: z.string(),
+        contrastMoment: z.string()
+      }).optional(),
+      commentaryAngles: z.array(z.string()).optional()
+    });
+
+    const res = await generateObjectWithRetry("final report merge", { 
+      model, 
+      temperature: 0.3, 
+      maxOutputTokens: 16384, 
+      schema: MergeAnalysisSchema,
+      prompt: promptText 
+    });
+    const parsed = (res.object ?? {}) as any;
 
 
     try {
-      const parsed = extractJson(text) as AnalysisReport & {
-        emotionalAnchor?: Record<string, unknown>;
-      };
       // Normalize legacy emotionalAnchor keys (sympatheticDetail/heroAction) → new universal keys.
       let emotionalAnchor: AnalysisReport["emotionalAnchor"] | undefined;
-      const raw = parsed.emotionalAnchor;
+      const raw = parsed.emotionalAnchor as Record<string, unknown> | undefined;
       if (raw && typeof raw === "object") {
         const pick = (...keys: string[]): string => {
           for (const k of keys) {

@@ -48,7 +48,7 @@ type Phase =
   | "error";
 
 const BATCH_SIZE = 6;
-const CONCURRENT_BATCHES = 3;
+const CONCURRENT_BATCHES = 6;
 const FRAME_EXTRACT_TIMEOUT_MS = 90_000;
 const DEFAULT_MAX_FRAMES = 12;
 

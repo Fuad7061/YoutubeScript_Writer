@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 import { useConfig, applyOverrideToAllStages } from "@/lib/store";
+import { searchAmazon } from "@/lib/amazon.functions";
 import { toast } from "sonner";
 import { Plus, Trash2, Zap, Database, HardDriveDownload } from "lucide-react";
 import { useState, useEffect } from "react";
@@ -16,6 +17,36 @@ function SettingsPage() {
   const [cfg, setCfg] = useConfig();
   const [stats, setStats] = useState<{ count: number; dbPath: string } | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [testingAmazon, setTestingAmazon] = useState(false);
+
+  async function handleTestAmazon() {
+    setTestingAmazon(true);
+    try {
+      const res = await searchAmazon({
+        data: {
+          query: "laptop",
+          limit: 1,
+          config: {
+            mode: cfg.amazonApiMode,
+            clientId: cfg.amazonClientId,
+            clientSecret: cfg.amazonClientSecret,
+            partnerTag: cfg.amazonPartnerTag,
+            region: cfg.amazonRegion,
+            marketplace: cfg.amazonMarketplace,
+          }
+        }
+      });
+      if (res.results.length > 0) {
+        toast.success(`Success! Found ${res.results.length} item(s).`);
+      } else {
+        toast.warning("API call succeeded but returned 0 results.");
+      }
+    } catch (e: any) {
+      toast.error(`Amazon API Error: ${e.message}`);
+    } finally {
+      setTestingAmazon(false);
+    }
+  }
 
   useEffect(() => {
     fetch("/api/sessions?stats=1")
@@ -189,6 +220,89 @@ function SettingsPage() {
 
 
 
+
+        <section className="rounded-lg border border-border bg-card p-6">
+          <h3 className="mb-1 text-lg font-semibold">Amazon API Settings</h3>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Configure the official Amazon Creators API (OAuth 2.0). If you want to use the legacy Lambda API, you can toggle it below.
+            For USA setup, use Region NA and Marketplace www.amazon.com.
+          </p>
+          <div className="mb-4 space-y-3 rounded-md border border-border bg-panel p-4">
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="amazonApiMode"
+                  checked={cfg.amazonApiMode === "creator"}
+                  onChange={() => setCfg({ amazonApiMode: "creator" })}
+                  className="accent-primary"
+                />
+                Official Creators API
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="amazonApiMode"
+                  checked={cfg.amazonApiMode === "lambda"}
+                  onChange={() => setCfg({ amazonApiMode: "lambda" })}
+                  className="accent-primary"
+                />
+                Legacy Lambda API
+              </label>
+            </div>
+            
+            {cfg.amazonApiMode === "creator" && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <Row label="Client ID">
+                  <Input value={cfg.amazonClientId || ""} onChange={(e) => setCfg({ amazonClientId: e.target.value })} placeholder="amzn1.application-oa2-client..." className="font-mono text-xs" />
+                </Row>
+                <Row label="Client Secret">
+                  <Input value={cfg.amazonClientSecret || ""} onChange={(e) => setCfg({ amazonClientSecret: e.target.value })} type="password" placeholder="secret..." className="font-mono text-xs" />
+                </Row>
+                <Row label="Partner Tag">
+                  <Input value={cfg.amazonPartnerTag || "consecho-20"} onChange={(e) => setCfg({ amazonPartnerTag: e.target.value })} placeholder="store-20" className="font-mono text-xs" />
+                </Row>
+                <Row label="Region">
+                  <select
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    value={cfg.amazonRegion || "NA"}
+                    onChange={(e) => setCfg({ amazonRegion: e.target.value as any })}
+                  >
+                    <option value="NA">NA (api.amazon.com)</option>
+                    <option value="EU">EU (api.amazon.co.uk)</option>
+                    <option value="FE">FE (api.amazon.co.jp)</option>
+                  </select>
+                </Row>
+                <Row label="Marketplace">
+                  <Input value={cfg.amazonMarketplace || "www.amazon.com"} onChange={(e) => setCfg({ amazonMarketplace: e.target.value })} placeholder="www.amazon.com" className="font-mono text-xs" />
+                </Row>
+              </div>
+            )}
+
+            {cfg.amazonApiMode === "creator" && (
+              <div className="mt-4 flex flex-col gap-4 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={cfg.amazonUseLambdaFallback}
+                    onChange={(e) => setCfg({ amazonUseLambdaFallback: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Use Legacy Lambda API as fallback if Creators API fails
+                </label>
+                <Button 
+                  onClick={handleTestAmazon} 
+                  disabled={testingAmazon || !cfg.amazonClientId || !cfg.amazonClientSecret}
+                  size="sm" 
+                  variant="outline"
+                >
+                  {testingAmazon ? "Testing..." : "Test Creators API"}
+                </Button>
+              </div>
+            )}
+
+          </div>
+        </section>
 
         <section className="rounded-lg border border-border bg-card p-6">
           <div className="mb-1 flex items-center justify-between gap-2">

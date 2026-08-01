@@ -97,6 +97,11 @@ export type StageOverride = {
   model?: string;
   /** Optional reference to a custom-model preset id (from Config.customModels). Resolved at read time. */
   presetId?: string;
+  /** When true, fail over to fallbackHost/fallbackApiKey/fallbackModel if primary model fails. */
+  enableFallback?: boolean;
+  fallbackHost?: string;
+  fallbackApiKey?: string;
+  fallbackModel?: string;
 };
 
 export type TranscriptSegment = { text: string; start: number; duration: number };

@@ -53,6 +53,20 @@ export type Config = {
   analyzeBatchSize: number;
   /** Frame Grid Stitching mode: 'off' | '2x2' | '3x3' (default '3x3'). Combines 4 or 9 frames into 1 grid image per request. */
   analyzeGridStitch: "off" | "2x2" | "3x3";
+  /** Amazon API mode: use the new official Creators API, or fallback to the Lambda worker. */
+  amazonApiMode: "creator" | "lambda";
+  /** Whether to automatically fallback to the Lambda API if the Creators API request fails. */
+  amazonUseLambdaFallback: boolean;
+  /** Creators API (OAuth) Client ID */
+  amazonClientId: string;
+  /** Creators API (OAuth) Client Secret */
+  amazonClientSecret: string;
+  /** Amazon Partner Tag (Affiliate Tag) */
+  amazonPartnerTag: string;
+  /** Amazon LwA Region Endpoint (NA, EU, FE) */
+  amazonRegion: "NA" | "EU" | "FE";
+  /** Amazon Marketplace Domain (e.g. www.amazon.com) */
+  amazonMarketplace: string;
 };
 
 export type VoiceoverResult = {
@@ -239,6 +253,13 @@ const defaultConfig: Config = {
   analyzeMaxFrames: 12,
   analyzeBatchSize: 6,
   analyzeGridStitch: "3x3",
+  amazonApiMode: "creator",
+  amazonUseLambdaFallback: false,
+  amazonClientId: "",
+  amazonClientSecret: "",
+  amazonPartnerTag: "consecho-20",
+  amazonRegion: "NA",
+  amazonMarketplace: "www.amazon.com",
 };
 
 // ── In-memory caches ──────────────────────────────────────────────────────
