@@ -7,7 +7,7 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { Toaster } from "@/components/ui/sonner";
 
 import appCss from "../styles.css?url";
@@ -115,8 +115,34 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Outlet />
+      <AuthGate>
+        <Outlet />
+      </AuthGate>
       <Toaster theme="dark" position="bottom-right" />
     </QueryClientProvider>
   );
+}
+
+/**
+ * Client-side guard: if the server has APP_PASSWORD set and this browser has
+ * no valid session cookie, send it to /__login. SSR already redirects full
+ * page loads; this covers client-side (SPA) navigations.
+ */
+function AuthGate({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    const pathname = window.location.pathname;
+    if (pathname === "/login" || pathname.startsWith("/api/")) return;
+
+    fetch("/api/auth?action=status", { credentials: "same-origin" })
+      .then((r) => r.json() as Promise<{ enabled: boolean; authed: boolean }>)
+      .then((status) => {
+        if (status.enabled && !status.authed) {
+          const next = encodeURIComponent(pathname + window.location.search);
+          window.location.replace(`/login?next=${next}`);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  return <>{children}</>;
 }

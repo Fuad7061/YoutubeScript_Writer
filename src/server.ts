@@ -2,6 +2,7 @@ import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
+import { AUTH_ENABLED, isPublicPath, checkAuth } from "./lib/auth.server";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -44,9 +45,38 @@ function isH3SwallowedErrorBody(body: string): boolean {
   }
 }
 
+/**
+ * Password gate for every request when APP_PASSWORD is set.
+ * - Browser page navigations without a valid session → 302 to /__login.
+ * - API / JSON requests (fetch, server functions, streaming) → 401.
+ * - Public paths (login page, /healthz, assets) always pass through.
+ */
+function authGate(request: Request): Response | undefined {
+  if (!AUTH_ENABLED) return undefined;
+  const url = new URL(request.url);
+  if (isPublicPath(url.pathname)) return undefined;
+  if (checkAuth(request)) return undefined;
+
+  const accept = request.headers.get("accept") ?? "";
+  if (accept.includes("text/html")) {
+    const next = encodeURIComponent(url.pathname + url.search);
+    return new Response(null, {
+      status: 302,
+      headers: { location: `/login?next=${next}` },
+    });
+  }
+  return new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const gated = authGate(request);
+      if (gated) return gated;
+
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);

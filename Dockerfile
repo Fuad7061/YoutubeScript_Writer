@@ -2,6 +2,11 @@
 FROM oven/bun:1 AS build
 WORKDIR /app
 
+# Python + C++ toolchain required by better-sqlite3 (node-gyp) during install
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip build-essential make g++ && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile
 
@@ -14,7 +19,7 @@ WORKDIR /app
 
 # Install system ffmpeg and python for backend scripts
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg python3 python3-venv python3-pip && \
+    ffmpeg python3 python3-venv python3-pip wget && \
     python3 -m venv /app/fast-whisper-env && \
     /app/fast-whisper-env/bin/pip install --no-cache-dir youtube-transcript-api yt-dlp faster-whisper && \
     rm -rf /var/lib/apt/lists/*

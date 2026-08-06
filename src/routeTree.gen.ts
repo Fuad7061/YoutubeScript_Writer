@@ -14,12 +14,14 @@ import { Route as AnalyzeRouteImport } from './routes/analyze'
 import { Route as CommentaryRouteImport } from './routes/commentary'
 import { Route as FairUseRouteImport } from './routes/fair-use'
 import { Route as FramesRouteImport } from './routes/frames'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as ProductsRouteImport } from './routes/products'
 import { Route as ScriptRouteImport } from './routes/script'
 import { Route as SeoRouteImport } from './routes/seo'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as TranscriptRouteImport } from './routes/transcript'
 import { Route as VoiceoverRouteImport } from './routes/voiceover'
+import { Route as ApiAuthRouteImport } from './routes/api/auth'
 import { Route as ApiExtractFramesRouteImport } from './routes/api/extract-frames'
 import { Route as ApiHealthzRouteImport } from './routes/api/healthz'
 import { Route as ApiMediaProxyRouteImport } from './routes/api/media-proxy'
@@ -51,6 +53,11 @@ const FramesRoute = FramesRouteImport.update({
   path: '/frames',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ProductsRoute = ProductsRouteImport.update({
   id: '/products',
   path: '/products',
@@ -79,6 +86,11 @@ const TranscriptRoute = TranscriptRouteImport.update({
 const VoiceoverRoute = VoiceoverRouteImport.update({
   id: '/voiceover',
   path: '/voiceover',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthRoute = ApiAuthRouteImport.update({
+  id: '/api/auth',
+  path: '/api/auth',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiExtractFramesRoute = ApiExtractFramesRouteImport.update({
@@ -113,12 +125,14 @@ export interface FileRoutesByFullPath {
   '/commentary': typeof CommentaryRoute
   '/fair-use': typeof FairUseRoute
   '/frames': typeof FramesRoute
+  '/login': typeof LoginRoute
   '/products': typeof ProductsRoute
   '/script': typeof ScriptRoute
   '/seo': typeof SeoRoute
   '/settings': typeof SettingsRoute
   '/transcript': typeof TranscriptRoute
   '/voiceover': typeof VoiceoverRoute
+  '/api/auth': typeof ApiAuthRoute
   '/api/extract-frames': typeof ApiExtractFramesRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/media-proxy': typeof ApiMediaProxyRoute
@@ -131,12 +145,14 @@ export interface FileRoutesByTo {
   '/commentary': typeof CommentaryRoute
   '/fair-use': typeof FairUseRoute
   '/frames': typeof FramesRoute
+  '/login': typeof LoginRoute
   '/products': typeof ProductsRoute
   '/script': typeof ScriptRoute
   '/seo': typeof SeoRoute
   '/settings': typeof SettingsRoute
   '/transcript': typeof TranscriptRoute
   '/voiceover': typeof VoiceoverRoute
+  '/api/auth': typeof ApiAuthRoute
   '/api/extract-frames': typeof ApiExtractFramesRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/media-proxy': typeof ApiMediaProxyRoute
@@ -150,12 +166,14 @@ export interface FileRoutesById {
   '/commentary': typeof CommentaryRoute
   '/fair-use': typeof FairUseRoute
   '/frames': typeof FramesRoute
+  '/login': typeof LoginRoute
   '/products': typeof ProductsRoute
   '/script': typeof ScriptRoute
   '/seo': typeof SeoRoute
   '/settings': typeof SettingsRoute
   '/transcript': typeof TranscriptRoute
   '/voiceover': typeof VoiceoverRoute
+  '/api/auth': typeof ApiAuthRoute
   '/api/extract-frames': typeof ApiExtractFramesRoute
   '/api/healthz': typeof ApiHealthzRoute
   '/api/media-proxy': typeof ApiMediaProxyRoute
@@ -170,12 +188,14 @@ export interface FileRouteTypes {
     | '/commentary'
     | '/fair-use'
     | '/frames'
+    | '/login'
     | '/products'
     | '/script'
     | '/seo'
     | '/settings'
     | '/transcript'
     | '/voiceover'
+    | '/api/auth'
     | '/api/extract-frames'
     | '/api/healthz'
     | '/api/media-proxy'
@@ -188,12 +208,14 @@ export interface FileRouteTypes {
     | '/commentary'
     | '/fair-use'
     | '/frames'
+    | '/login'
     | '/products'
     | '/script'
     | '/seo'
     | '/settings'
     | '/transcript'
     | '/voiceover'
+    | '/api/auth'
     | '/api/extract-frames'
     | '/api/healthz'
     | '/api/media-proxy'
@@ -206,12 +228,14 @@ export interface FileRouteTypes {
     | '/commentary'
     | '/fair-use'
     | '/frames'
+    | '/login'
     | '/products'
     | '/script'
     | '/seo'
     | '/settings'
     | '/transcript'
     | '/voiceover'
+    | '/api/auth'
     | '/api/extract-frames'
     | '/api/healthz'
     | '/api/media-proxy'
@@ -225,12 +249,14 @@ export interface RootRouteChildren {
   CommentaryRoute: typeof CommentaryRoute
   FairUseRoute: typeof FairUseRoute
   FramesRoute: typeof FramesRoute
+  LoginRoute: typeof LoginRoute
   ProductsRoute: typeof ProductsRoute
   ScriptRoute: typeof ScriptRoute
   SeoRoute: typeof SeoRoute
   SettingsRoute: typeof SettingsRoute
   TranscriptRoute: typeof TranscriptRoute
   VoiceoverRoute: typeof VoiceoverRoute
+  ApiAuthRoute: typeof ApiAuthRoute
   ApiExtractFramesRoute: typeof ApiExtractFramesRoute
   ApiHealthzRoute: typeof ApiHealthzRoute
   ApiMediaProxyRoute: typeof ApiMediaProxyRoute
@@ -275,6 +301,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof FramesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/products': {
       id: '/products'
       path: '/products'
@@ -315,6 +348,13 @@ declare module '@tanstack/react-router' {
       path: '/voiceover'
       fullPath: '/voiceover'
       preLoaderRoute: typeof VoiceoverRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth': {
+      id: '/api/auth'
+      path: '/api/auth'
+      fullPath: '/api/auth'
+      preLoaderRoute: typeof ApiAuthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/extract-frames': {
@@ -361,12 +401,14 @@ const rootRouteChildren: RootRouteChildren = {
   CommentaryRoute: CommentaryRoute,
   FairUseRoute: FairUseRoute,
   FramesRoute: FramesRoute,
+  LoginRoute: LoginRoute,
   ProductsRoute: ProductsRoute,
   ScriptRoute: ScriptRoute,
   SeoRoute: SeoRoute,
   SettingsRoute: SettingsRoute,
   TranscriptRoute: TranscriptRoute,
   VoiceoverRoute: VoiceoverRoute,
+  ApiAuthRoute: ApiAuthRoute,
   ApiExtractFramesRoute: ApiExtractFramesRoute,
   ApiHealthzRoute: ApiHealthzRoute,
   ApiMediaProxyRoute: ApiMediaProxyRoute,

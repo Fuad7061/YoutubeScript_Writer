@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { requireAuth } from "@/lib/auth.server";
 
 /**
  * Streams a remote media file back to the browser as a same-origin response.
@@ -246,6 +247,9 @@ export const Route = createFileRoute("/api/media-proxy")({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const authErr = requireAuth(request);
+        if (authErr) return authErr;
+
         const url = new URL(request.url);
         const service = url.searchParams.get("service");
         const resolve = url.searchParams.get("resolve");
