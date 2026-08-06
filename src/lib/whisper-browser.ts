@@ -15,7 +15,7 @@ async function getPipeline(
 ) {
   if (!pipelinePromise) {
     pipelinePromise = (async () => {
-      const mod = (await import("@huggingface/transformers")) as {
+      const mod = (await import("@huggingface/transformers")) as unknown as {
         pipeline: (task: string, model: string, opts?: unknown) => Promise<unknown>;
         env: { allowLocalModels: boolean; useBrowserCache: boolean };
       };

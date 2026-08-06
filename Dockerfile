@@ -43,6 +43,6 @@ VOLUME ["/data"]
 EXPOSE 9090
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD wget -qO- http://localhost:${PORT}/healthz || exit 1
+  CMD wget -qO- http://localhost:${PORT}/api/healthz || exit 1
 
 CMD ["bun", "run", "preview"]

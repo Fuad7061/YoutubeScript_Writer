@@ -25,7 +25,7 @@ export const AUTH_ENABLED = Boolean(APP_PASSWORD);
 export const AUTH_COOKIE = "app_password";
 
 /** Public paths that skip auth even when APP_PASSWORD is set. */
-const PUBLIC_PATHS = new Set(["/login", "/healthz", "/api/auth"]);
+const PUBLIC_PATHS = new Set(["/login", "/healthz", "/api/healthz", "/api/auth"]);
 const PUBLIC_PREFIXES = ["/_build/", "/assets/", "/favicon", "/wasm/", "/__l5e/"];
 
 export function isPublicPath(pathname: string): boolean {
