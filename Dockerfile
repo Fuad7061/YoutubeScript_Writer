@@ -33,10 +33,13 @@ ENV PATH="/app/fast-whisper-env/bin:$PATH"
 RUN mkdir -p /data
 
 # Copy built assets and required files
+# NOTE: src/ is required at runtime — vite preview re-resolves the TanStack
+# router entry (src/router.tsx) and route tree (src/routes) on startup.
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/vite.config.ts ./vite.config.ts
+COPY --from=build /app/src ./src
 
 VOLUME ["/data"]
 
