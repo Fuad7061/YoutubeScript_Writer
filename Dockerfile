@@ -14,7 +14,10 @@ COPY . .
 RUN bun run build
 
 # --- Runtime Stage ---
-FROM oven/bun:1-slim AS run
+# Node, not Bun: Bun cannot dlopen the better-sqlite3 native addon on Linux
+# (oven-sh/bun#4290), which crashes every request at startup. The addon is a
+# standard node-gyp build, so Node loads it fine.
+FROM node:22-slim AS run
 WORKDIR /app
 
 # Install system ffmpeg and python for backend scripts
@@ -48,4 +51,4 @@ EXPOSE 9090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD wget -qO- http://localhost:${PORT}/api/healthz || exit 1
 
-CMD ["bun", "run", "preview"]
+CMD ["node", "node_modules/vite/bin/vite.js", "preview"]
