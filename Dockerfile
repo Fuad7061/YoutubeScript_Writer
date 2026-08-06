@@ -44,6 +44,17 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/vite.config.ts ./vite.config.ts
 COPY --from=build /app/src ./src
 
+# better-sqlite3 was compiled in the build stage against a newer glibc
+# (oven/bun images are trixie-based) than this Debian bookworm runtime.
+# Rebuild the native addon here so it links against this image's glibc,
+# then remove the compilers so they don't bloat the final image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential python3 make g++ && \
+    npm rebuild better-sqlite3 && \
+    apt-get purge -y build-essential python3 make g++ && \
+    apt-get autoremove --purge -y && \
+    rm -rf /var/lib/apt/lists/*
+
 VOLUME ["/data"]
 
 EXPOSE 9090
