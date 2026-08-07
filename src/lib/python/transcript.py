@@ -20,6 +20,15 @@ class _NoCaptions(Exception):
 
 
 def video_id(url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(url)
+        v = urllib.parse.parse_qs(parsed.query).get("v")
+        if v:
+            m = re.fullmatch(r"[A-Za-z0-9_-]{11}", v[0])
+            if m:
+                return m.group(0)
+    except ValueError:
+        pass
     m = re.search(r"(?:shorts/|watch\?v=|youtu\.be/|embed/|live/)([A-Za-z0-9_-]{11})", url)
     if not m:
         raise ValueError(f"Couldn't find a video ID in: {url}")

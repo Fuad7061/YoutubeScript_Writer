@@ -48,10 +48,12 @@ COPY --from=build /app/src ./src
 # (oven/bun images are trixie-based) than this Debian bookworm runtime.
 # Rebuild the native addon here so it links against this image's glibc,
 # then remove the compilers so they don't bloat the final image.
+# NOTE: python3 must NOT be purged — the Whisper venv above
+# (/app/fast-whisper-env/bin/python3) symlinks to the system interpreter.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential python3 make g++ && \
     npm rebuild better-sqlite3 && \
-    apt-get purge -y build-essential python3 make g++ && \
+    apt-get purge -y build-essential make g++ && \
     apt-get autoremove --purge -y && \
     rm -rf /var/lib/apt/lists/*
 
