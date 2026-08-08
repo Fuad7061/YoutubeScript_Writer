@@ -111,7 +111,7 @@ function Index() {
       reset();
       setProject({ url, mode: "youtube" });
       activity.log("fetching captions via youtube-transcript-api…");
-      const res = await fetchTranscript({ data: { url } });
+      const res = await fetchTranscript({ data: { url, proxy: cfg.youtubeProxy } });
       const title = res.meta?.title;
       activity.log(
         `video: ${title?.slice(0, 60) ?? res.videoId ?? "unknown"}`,
@@ -133,7 +133,7 @@ function Index() {
           const resp = await fetch("/api/transcribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url }),
+            body: JSON.stringify({ url, proxy: cfg.youtubeProxy }),
           });
           const data = await resp.json();
           if (resp.ok && Array.isArray(data.segments) && data.segments.length > 0) {

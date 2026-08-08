@@ -19,6 +19,7 @@ import { innertubeCaptions, extractVideoId } from "./youtube-innertube.server";
 
 const Input = z.object({
   url: z.string().min(1),
+  proxy: z.string().optional(),
   transcribeAudio: z.boolean().optional(), // passed through for context, not used here
 });
 
@@ -49,13 +50,23 @@ export const fetchTranscript = createServerFn({ method: "POST" })
     const script = getScriptPath();
 
     let raw: any;
+    const proxy = data.proxy?.trim() || process.env.YOUTUBE_PROXY || process.env.HTTPS_PROXY || "";
     try {
       // Run Tier 1 only — allow_whisper = false.
       // Whisper fallback is a separate POST /api/transcribe call from the frontend.
-      const stdout = execFileSync(python, [script, data.url, "false"], {
+      const args = [script, data.url, "false", "small"];
+      if (proxy) {
+        args.push(proxy);
+      }
+      const env = {
+        ...process.env,
+        ...(proxy ? { YOUTUBE_PROXY: proxy, HTTPS_PROXY: proxy, HTTP_PROXY: proxy } : {}),
+      };
+      const stdout = execFileSync(python, args, {
         timeout: 30_000,
         encoding: "utf8",
         maxBuffer: 4 * 1024 * 1024,
+        env,
       });
       raw = JSON.parse(stdout.trim());
     } catch (e: any) {

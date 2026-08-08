@@ -168,6 +168,33 @@ function SettingsPage() {
         </section>
 
         <section className="rounded-lg border border-border bg-card p-6">
+          <h3 className="mb-1 text-lg font-semibold">YouTube Proxy Server</h3>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Optional HTTP, HTTPS, or SOCKS5 proxy URL to route YouTube caption and audio requests through on VPS / datacenter servers to bypass IP bans.
+            See{" "}
+            <a
+              href="https://github.com/jdepoix/youtube-transcript-api?tab=readme-ov-file#working-around-ip-bans-requestblocked-or-ipblocked-exception"
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-primary hover:underline"
+            >
+              youtube-transcript-api IP ban guide ↗
+            </a>
+          </p>
+          <div className="max-w-xl space-y-2">
+            <Input
+              value={cfg.youtubeProxy ?? ""}
+              onChange={(e) => setCfg({ youtubeProxy: e.target.value })}
+              placeholder="http://user:pass@proxy.example.com:8080 or socks5://1.2.3.4:1080"
+              className="font-mono text-xs"
+            />
+            <p className="font-mono text-[11px] text-muted-foreground">
+              Formants: <code>http://user:pass@host:port</code>, <code>http://host:port</code>, <code>socks5://host:port</code>
+            </p>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-border bg-card p-6">
           <h3 className="mb-1 text-lg font-semibold">Gemini TTS · API keys</h3>
           <p className="mb-4 text-xs text-muted-foreground">
             Add one or more Google AI Studio keys. During voiceover generation they are tried in order — if the first is rate-limited or invalid, the next is used automatically.{" "}

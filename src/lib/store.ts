@@ -53,6 +53,8 @@ export type Config = {
   analyzeBatchSize: number;
   /** Frame Grid Stitching mode: 'off' | '2x2' | '3x3' (default '3x3'). Combines 4 or 9 frames into 1 grid image per request. */
   analyzeGridStitch: "off" | "2x2" | "3x3";
+  /** Optional HTTP/HTTPS/SOCKS5 proxy URL to route YouTube requests through to bypass VPS IP blocks. */
+  youtubeProxy?: string;
   /** Amazon API mode: use the new official Creators API, or fallback to the Lambda worker. */
   amazonApiMode: "creator" | "lambda";
   /** Whether to automatically fallback to the Lambda API if the Creators API request fails. */
@@ -253,6 +255,7 @@ const defaultConfig: Config = {
   analyzeMaxFrames: 12,
   analyzeBatchSize: 6,
   analyzeGridStitch: "3x3",
+  youtubeProxy: "",
   amazonApiMode: "creator",
   amazonUseLambdaFallback: false,
   amazonClientId: "",

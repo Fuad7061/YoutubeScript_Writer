@@ -4,11 +4,9 @@ Tier 1: real YouTube captions (fast). Tier 2: yt-dlp audio + faster-whisper (any
 
 Install:  pip install youtube-transcript-api yt-dlp curl_cffi faster-whisper
 (ffmpeg recommended on PATH for widest audio-format support)
-curl_cffi enables browser TLS impersonation, which keeps YouTube from
-bot-blocking datacenter/VPS egress IPs.
 
 CLI Usage:
-  python3 transcript.py <url> [allow_whisper=true] [whisper_model=small]
+  python3 transcript.py <url> [allow_whisper=true] [whisper_model=small] [proxy_url]
 """
 import os, re, json, html, sys, time, urllib.parse, urllib.request
 from youtube_transcript_api import (
@@ -17,27 +15,28 @@ from youtube_transcript_api import (
     AgeRestricted, InvalidVideoId, VideoUnplayable,
 )
 
-# Errors that definitively mean the *video* cannot be played — no point
-# retrying or falling back to Whisper.
-# NOTE: VideoUnavailable from youtube-transcript-api on VPS IPs is often an
-# IP-block masquerading as "video unavailable" (the watch-page HTML doesn't
-# load so the library can't confirm the video exists). We intentionally leave
-# VideoUnavailable OUT of this tuple so it falls through to yt-dlp, which uses
-# impersonation + PO tokens and can often still fetch the video.
 _HARD_CAPTION_ERRORS = (AgeRestricted, InvalidVideoId, VideoUnplayable)
 
-# Chrome 150 fingerprint so YouTube sees requests that look like a real
-# browser instead of a server (matters on VPS/datacenter egress IPs).
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
 
-# Player clients in priority order. android, mweb, ios, and web are the most
-# reliable clients for captions and audio streams on datacenter IPs.
 _YDL_PLAYER_CLIENTS = os.environ.get(
     "YTDLP_PLAYER_CLIENTS", "android,mweb,ios,web").split(",")
 
 
-def _ydl_opts(extra=None):
+def get_proxy():
+    """Get YouTube HTTP/HTTPS proxy from CLI args or environment variables."""
+    if len(sys.argv) > 4 and sys.argv[4].strip():
+        return sys.argv[4].strip()
+    return (
+        os.environ.get("YOUTUBE_PROXY")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("HTTP_PROXY")
+        or ""
+    ).strip()
+
+
+def _ydl_opts(extra=None, proxy=None):
     """yt-dlp options that survive YouTube's bot checks from datacenter IPs."""
     pot_url = os.environ.get("POT_PROVIDER_URL", "http://127.0.0.1:4416/token")
     yt_args = {
@@ -58,10 +57,9 @@ def _ydl_opts(extra=None):
         "retries": 5,
         "extractor_args": {"youtube": yt_args},
     }
-    # YouTube cookies (Netscape cookies.txt) — when present, yt-dlp sends them so
-    # YouTube sees a logged-in, verified session. The most reliable way to pass
-    # the "Sign in to confirm you're not a bot" check on a flagged datacenter IP.
-    # Python's http.cookiejar is strict: every domain column must start with ".".
+    if proxy:
+        opts["proxy"] = proxy
+
     cookies_path = os.environ.get("YOUTUBE_COOKIES_PATH", "/data/youtube-cookies.txt")
     if os.path.exists(cookies_path):
         try:
@@ -73,8 +71,7 @@ def _ydl_opts(extra=None):
                 opts["cookiefile"] = cookies_path
             else:
                 print(f"[transcript] WARNING: {cookies_path} is not in valid Netscape format "
-                      f"(domain column must start with '.youtube.com') — skipping cookies. "
-                      f"Re-export from your browser and re-paste in Settings.", file=sys.stderr)
+                      f"(domain column must start with '.youtube.com') — skipping cookies.", file=sys.stderr)
         except Exception as e:
             print(f"[transcript] WARNING: could not read cookies: {e}", file=sys.stderr)
     if extra:
@@ -83,10 +80,7 @@ def _ydl_opts(extra=None):
 
 
 def _extract_ydl(opts, url, download=False):
-    """yt-dlp extract_info with browser TLS impersonation (curl_cffi).
-
-    Falls back to plain HTTPS when curl_cffi isn't installed in the venv.
-    """
+    """yt-dlp extract_info with browser TLS impersonation (curl_cffi)."""
     import yt_dlp
     opts = dict(opts)
     try:
@@ -126,11 +120,17 @@ def video_id(url: str) -> str:
     return m.group(1)
 
 
-def get_title(vid: str):
+def get_title(vid: str, proxy=None):
     api = "https://www.youtube.com/oembed?" + urllib.parse.urlencode(
         {"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"})
     try:
-        with urllib.request.urlopen(api, timeout=10) as r:
+        if proxy:
+            from curl_cffi.requests import get as curl_get
+            r = curl_get(api, proxies={"http": proxy, "https": proxy}, impersonate="chrome", timeout=10)
+            if r.status_code == 200:
+                return r.json().get("title")
+        req = urllib.request.Request(api, headers={"user-agent": BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r).get("title")
     except Exception:
         return None
@@ -145,13 +145,7 @@ def hms(seconds: float) -> str:
 # ---------- Tier 1: real captions ----------
 
 def _yt_cookie_header():
-    """Build a `Cookie` header value from the saved Netscape cookies.txt.
-
-    youtube-transcript-api's cookie auth is disabled upstream, so instead of
-    loading the jar we inject the same browser cookies as a Cookie header. This
-    makes the watch-page fetch look like a logged-in browser, which is what
-    gets past "Sign in to confirm you're not a bot" on flagged datacenter IPs.
-    """
+    """Build a `Cookie` header value from the saved Netscape cookies.txt."""
     path = os.environ.get("YOUTUBE_COOKIES_PATH", "/data/youtube-cookies.txt")
     if not os.path.exists(path):
         return None
@@ -176,15 +170,8 @@ def _yt_cookie_header():
     return "; ".join(pairs) if pairs else None
 
 
-def _transcript_api():
-    """A YouTubeTranscriptApi that talks to YouTube like a real browser.
-
-    The stock client uses plain `requests`, which YouTube connection-resets on
-    datacenter IPs (Errno 104) before any content is served. curl_cffi
-    (already in the venv for yt-dlp) impersonates Chrome's TLS fingerprint,
-    and we add the saved browser cookies on top. Falls back to the stock
-    client if curl_cffi or the http_client kwarg isn't available.
-    """
+def _transcript_api(proxy=None):
+    """A YouTubeTranscriptApi that talks to YouTube like a real browser."""
     try:
         from curl_cffi.requests import Session as CurlSession
         sess = CurlSession(impersonate="chrome", timeout=30)
@@ -192,11 +179,21 @@ def _transcript_api():
             "accept-language": "en-US,en;q=0.9",
             "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         })
+        if proxy:
+            sess.proxies = {"http": proxy, "https": proxy}
         cookie_header = _yt_cookie_header()
         if cookie_header:
             sess.headers["cookie"] = cookie_header
-        return YouTubeTranscriptApi(http_client=sess)
+        try:
+            return YouTubeTranscriptApi(http_client=sess, proxy=proxy) if proxy else YouTubeTranscriptApi(http_client=sess)
+        except TypeError:
+            return YouTubeTranscriptApi(http_client=sess)
     except Exception:
+        if proxy:
+            try:
+                return YouTubeTranscriptApi(proxy=proxy)
+            except TypeError:
+                pass
         return YouTubeTranscriptApi()
 
 
@@ -214,35 +211,26 @@ def _pick(tlist, prefer):
     raise NoTranscriptFound.__new__(NoTranscriptFound)
 
 
-def _from_captions(vid, prefer, translate_to, retries=3):
-    # youtube-transcript-api can get transiently throttled (429 / IP-based
-    # rate limits on datacenter IPs). Retry with backoff before giving up.
-    # Connection resets (Errno 104) and library request errors are NOT wrapped
-    # as CouldNotRetrieveTranscript, so they must be caught explicitly here or
-    # they'd crash the whole script instead of falling through to yt-dlp.
+def _from_captions(vid, prefer, translate_to, retries=3, proxy=None):
     last_err = None
     tlist = None
+    api = _transcript_api(proxy=proxy)
     for attempt in range(retries):
         try:
-            tlist = _transcript_api().list(vid)
+            tlist = api.list(vid)
             break
         except (NoTranscriptFound, TranscriptsDisabled):
             raise _NoCaptions
         except _HARD_CAPTION_ERRORS:
             raise
         except CouldNotRetrieveTranscript as e:
-            # IpBlocked / RequestBlocked / PoTokenRequired / ... -> blocked IP
-            # or token-required video. Retry, then fall through to yt-dlp which
-            # has the PO token provider + cookies.
             last_err = e
         except Exception as e:
-            # requests.exceptions.ConnectionError, urllib3 ProtocolError, etc.
-            # — the "connection reset by peer" signature of a flagged IP.
             last_err = e
         if attempt < retries - 1:
-            time.sleep(2 * (attempt + 1))
+            time.sleep(1.5 * (attempt + 1))
     if tlist is None:
-        print(f"[transcript] Tier 1 (transcript API) failed after {retries} attempts: "
+        print(f"[transcript] Tier 1 (transcript API{' via proxy' if proxy else ''}) failed: "
               f"{type(last_err).__name__}: {last_err}", file=sys.stderr)
         raise _NoCaptions
     available = [{"code": t.language_code, "name": t.language, "generated": t.is_generated}
@@ -264,8 +252,8 @@ def _from_captions(vid, prefer, translate_to, retries=3):
              "text": html.unescape(s.text).replace("\n", " ").strip()} for s in chosen.fetch()]
     total = round(max((c["start"] + c["dur"] for c in caps), default=0.0), 3)
     return {
-        "title": get_title(vid), "video_id": vid,
-        "url": f"https://www.youtube.com/watch?v={vid}", "source": "captions",
+        "title": get_title(vid, proxy=proxy), "video_id": vid,
+        "url": f"https://www.youtube.com/watch?v={vid}", "source": f"captions{' (proxy)' if proxy else ''}",
         "language": chosen.language, "language_code": chosen.language_code,
         "is_generated": chosen.is_generated, "translated_to": translated_to,
         "available_languages": available, "duration_seconds": total, "duration": hms(total),
@@ -274,17 +262,9 @@ def _from_captions(vid, prefer, translate_to, retries=3):
     }
 
 
-# ---------- Tier 1b: yt-dlp subtitles (works when the transcript API is blocked) ----------
+# ---------- Tier 1b: yt-dlp subtitles ----------
 
-def _fetch_subtitles(url, vid, prefer):
-    """Fetch captions via yt-dlp's subtitle endpoints (no audio download).
-
-    YouTube often throttles the youtube-transcript-api endpoints from
-    datacenter IPs while the yt-dlp player/subtitle endpoints still work,
-    so this is a cheap second shot at real captions before Whisper. Uses
-    TV/embedded player clients + browser TLS impersonation (curl_cffi),
-    which look like a real browser to YouTube.
-    """
+def _fetch_subtitles(url, vid, prefer, proxy=None):
     langs = [l for l in prefer if isinstance(l, str)] + ["en", "en-US", "en-orig"]
     opts = _ydl_opts({
         "skip_download": True,
@@ -292,7 +272,7 @@ def _fetch_subtitles(url, vid, prefer):
         "writeautomaticsub": True,
         "subtitleslangs": langs,
         "subtitlesformat": "vtt/best",
-    })
+    }, proxy=proxy)
     info = _extract_ydl(opts, url)
     if not info:
         raise _NoCaptions
@@ -310,7 +290,6 @@ def _fetch_subtitles(url, vid, prefer):
     fmt = subs[chosen_lang]
     url2 = None
     if isinstance(fmt, dict):
-        # single format: {"ext": "vtt", "url": "..."}
         url2 = fmt.get("url")
         if not url2:
             for f in fmt.values():
@@ -321,7 +300,6 @@ def _fetch_subtitles(url, vid, prefer):
                     url2 = f
                     break
     else:
-        # list of formats (older yt-dlp shape)
         for f in fmt:
             if isinstance(f, str):
                 url2 = f
@@ -335,19 +313,15 @@ def _fetch_subtitles(url, vid, prefer):
     if not url2:
         raise _NoCaptions
 
-    # Subtitle files are hosted on YouTube's timedtext CDN which also
-    # bot-checks TLS fingerprints from datacenter IPs. Use curl_cffi Chrome
-    # impersonation when available, fall back to plain urllib.
-    raw = _fetch_vtt(url2)
-
+    raw = _fetch_vtt(url2, proxy=proxy)
     caps = _parse_vtt(raw)
     if not caps:
         raise _NoCaptions
     total = round(max((c["start"] + c["dur"] for c in caps), default=0.0), 3)
     is_generated = chosen_lang in (info.get("automatic_captions") or {})
     return {
-        "title": info.get("title") or get_title(vid), "video_id": vid,
-        "url": f"https://www.youtube.com/watch?v={vid}", "source": "ytdlp-captions",
+        "title": info.get("title") or get_title(vid, proxy=proxy), "video_id": vid,
+        "url": f"https://www.youtube.com/watch?v={vid}", "source": f"ytdlp-captions{' (proxy)' if proxy else ''}",
         "language": chosen_lang, "language_code": chosen_lang,
         "is_generated": is_generated, "translated_to": None,
         "available_languages": sorted(set(
@@ -358,14 +332,8 @@ def _fetch_subtitles(url, vid, prefer):
         "captions": caps,
     }
 
-def _fetch_vtt(url2: str) -> str:
-    """Fetch a VTT/subtitle URL using Chrome TLS impersonation when available.
 
-    YouTube's timedtext CDN endpoints perform TLS fingerprint checks on VPS
-    datacenter IP ranges (same bot-check as the main site). curl_cffi's Chrome
-    impersonation bypasses this. Falls back to plain urllib when curl_cffi is
-    not installed.
-    """
+def _fetch_vtt(url2: str, proxy=None) -> str:
     headers = {
         "user-agent": BROWSER_UA,
         "accept": "*/*",
@@ -374,26 +342,32 @@ def _fetch_vtt(url2: str) -> str:
     }
     try:
         from curl_cffi.requests import get as curl_get
-        resp = curl_get(url2, headers=headers, impersonate="chrome", timeout=30)
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        resp = curl_get(url2, headers=headers, proxies=proxies, impersonate="chrome", timeout=30)
         resp.raise_for_status()
         return resp.text
-    except ImportError:
-        pass  # curl_cffi not installed — fall back to urllib
     except Exception as e:
-        print(f"[transcript] curl_cffi VTT fetch failed: {type(e).__name__}: {e}", file=sys.stderr)
-        # Fall through to urllib for one more attempt
+        print(f"[transcript] VTT fetch failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+    if proxy:
+        handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        opener = urllib.request.build_opener(handler)
+        req = urllib.request.Request(url2, headers=headers)
+        try:
+            with opener.open(req, timeout=30) as r:
+                return r.read().decode("utf-8", "replace")
+        except Exception:
+            raise _NoCaptions
 
     req = urllib.request.Request(url2, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.read().decode("utf-8", "replace")
-    except Exception as e:
-        print(f"[transcript] urllib VTT fetch also failed: {type(e).__name__}: {e}", file=sys.stderr)
+    except Exception:
         raise _NoCaptions
 
 
 def _parse_vtt(raw):
-    """Parse WebVTT, SRT, or JSON3 caption payloads into [{start, dur, text}]."""
     raw_str = raw.strip()
     if raw_str.startswith("{") or raw_str.startswith("["):
         try:
@@ -458,9 +432,9 @@ def _load_whisper(size):
         try:
             import ctranslate2
             if ctranslate2.get_cuda_device_count() > 0:
-                device, compute = "cuda", "float16"     # GPU
+                device, compute = "cuda", "float16"
             else:
-                device, compute = "cpu", "int8"         # optimized CPU
+                device, compute = "cpu", "int8"
         except Exception:
             device, compute = "cpu", "int8"
         _WHISPER[size] = WhisperModel(size, device=device, compute_type=compute)
@@ -485,14 +459,14 @@ def _whisper_result(vid, title, duration_hint, src_lang, task, segments):
     }
 
 
-def _from_whisper(url, vid, translate_to, size):
+def _from_whisper(url, vid, translate_to, size, proxy=None):
     import tempfile, os
     model = _load_whisper(size)
     with tempfile.TemporaryDirectory() as tmp:
         opts = _ydl_opts({
             "format": "bestaudio/best",
             "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-        })
+        }, proxy=proxy)
         info = _extract_ydl(opts, url, download=True)
         dls = info.get("requested_downloads") or []
         audio_path = dls[0].get("filepath") if dls else None
@@ -500,205 +474,82 @@ def _from_whisper(url, vid, translate_to, size):
             audio_path = os.path.join(tmp, f"{vid}.{info.get('ext') or 'webm'}")
         task = "translate" if translate_to == "en" else "transcribe"
         segments, tinfo = model.transcribe(audio_path, beam_size=5, vad_filter=True, task=task)
-        segments = list(segments)   # generator -> materialize
+        segments = list(segments)
     return _whisper_result(vid, info.get("title"),
                            getattr(tinfo, "duration", None) or info.get("duration"),
                            tinfo.language, task, segments)
 
 
-def _fetch_external_api_subtitles(url, vid, prefer):
-    """Fetch captions via 3rd party APIs (Snapany / Snapscooper) when YouTube bot-checks the server IP."""
-    print(f"[transcript] Tier 1c: attempting 3rd-party API fallback for {vid}…", file=sys.stderr)
-
-    # 1. Snapany API
-    headers_snapany = {
-        "accept": "*/*",
-        "accept-language": "en",
-        "content-type": "application/json",
-        "g-footer": os.environ.get("SNAPANY_G_FOOTER", "2f709202d3c3805991cc8714f6887fd263a70f6584519f07f2559bc0a42d1ddf"),
-        "g-timestamp": os.environ.get("SNAPANY_G_TIMESTAMP", "1786207681596"),
-        "g-timezone": "Asia/Dhaka",
-        "origin": "https://snapany.com",
-        "referer": "https://snapany.com/",
-        "user-agent": BROWSER_UA,
-    }
-    try:
-        from curl_cffi.requests import post as curl_post
-        res = curl_post(
-            "https://api.snapany.com/v1/extract/subtitles",
-            json={"url": f"https://www.youtube.com/watch?v={vid}"},
-            headers=headers_snapany,
-            impersonate="chrome",
-            timeout=15,
-        )
-        if res.status_code == 200:
-            data = res.json()
-            sub_tracks = data.get("subtitles") or []
-            if sub_tracks:
-                track = sub_tracks[0]
-                for t in sub_tracks:
-                    lang = (t.get("language_tag") or "").lower()
-                    if lang == "en" or lang.startswith("en"):
-                        track = t
-                        break
-                urls = track.get("urls") or []
-                item = next((u for u in urls if u.get("format") in ("srt", "vtt", "json3")), None) or (urls[0] if urls else None)
-                sub_url = item.get("url") if isinstance(item, dict) else item
-                if sub_url:
-                    raw_sub = _fetch_vtt(sub_url)
-                    caps = _parse_vtt(raw_sub)
-                    if caps:
-                        total = round(max((c["start"] + c["dur"] for c in caps), default=0.0), 3)
-                        chosen_name = track.get("language_name") or "English"
-                        chosen_tag = track.get("language_tag") or "en"
-                        print("[transcript] Tier 1c (Snapany API): success", file=sys.stderr)
-                        return {
-                            "title": data.get("title") or get_title(vid),
-                            "video_id": vid,
-                            "url": f"https://www.youtube.com/watch?v={vid}",
-                            "source": "snapany-captions",
-                            "language": chosen_name,
-                            "language_code": chosen_tag,
-                            "is_generated": "auto-generated" in chosen_name.lower(),
-                            "translated_to": None,
-                            "available_languages": [
-                                {"code": t.get("language_tag"), "name": t.get("language_name"), "generated": "auto-generated" in t.get("language_name", "").lower()}
-                                for t in sub_tracks if t.get("language_tag")
-                            ],
-                            "duration_seconds": total,
-                            "duration": hms(total),
-                            "caption_count": len(caps),
-                            "transcript": " ".join(c["text"] for c in caps),
-                            "captions": caps,
-                        }
-        else:
-            print(f"[transcript] Tier 1c Snapany returned status {res.status_code}", file=sys.stderr)
-    except Exception as e:
-        print(f"[transcript] Tier 1c Snapany exception: {e}", file=sys.stderr)
-
-    # 2. Snapscooper API fallback
-    headers_scooper = {
-        "accept": "application/json",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "origin": "https://snapscooper.com",
-        "referer": "https://snapscooper.com/tools/yt1",
-        "user-agent": BROWSER_UA,
-    }
-    try:
-        from curl_cffi.requests import post as curl_post
-        res = curl_post(
-            "https://snapscooper.com/api/tool/post-info",
-            json={"toolId": "youtube", "url": f"https://www.youtube.com/watch?v={vid}", "highres": False},
-            headers=headers_scooper,
-            impersonate="chrome",
-            timeout=15,
-        )
-        if res.status_code == 200:
-            data = res.json()
-            sub_tracks = data.get("subtitles") or data.get("captions") or []
-            if sub_tracks:
-                track = sub_tracks[0]
-                for t in sub_tracks:
-                    lang = (t.get("language_tag") or t.get("lang") or "").lower()
-                    if lang == "en" or lang.startswith("en"):
-                        track = t
-                        break
-                urls = track.get("urls") or []
-                item = next((u for u in urls if u.get("format") in ("srt", "vtt", "json3")), None) or (urls[0] if urls else None)
-                sub_url = item.get("url") if isinstance(item, dict) else item
-                if sub_url:
-                    raw_sub = _fetch_vtt(sub_url)
-                    caps = _parse_vtt(raw_sub)
-                    if caps:
-                        total = round(max((c["start"] + c["dur"] for c in caps), default=0.0), 3)
-                        print("[transcript] Tier 1c (Snapscooper API): success", file=sys.stderr)
-                        return {
-                            "title": data.get("title") or get_title(vid),
-                            "video_id": vid,
-                            "url": f"https://www.youtube.com/watch?v={vid}",
-                            "source": "snapscooper-captions",
-                            "language": track.get("language_name", "English"),
-                            "language_code": track.get("language_tag", "en"),
-                            "is_generated": True,
-                            "translated_to": None,
-                            "available_languages": [],
-                            "duration_seconds": total,
-                            "duration": hms(total),
-                            "caption_count": len(caps),
-                            "transcript": " ".join(c["text"] for c in caps),
-                            "captions": caps,
-                        }
-        else:
-            print(f"[transcript] Tier 1c Snapscooper returned status {res.status_code}", file=sys.stderr)
-    except Exception as e:
-        print(f"[transcript] Tier 1c Snapscooper exception: {e}", file=sys.stderr)
-
-    raise _NoCaptions
-
-
 # ---------- Public entry point ----------
 
 def transcript_json(url, prefer=("en",), translate_to=None,
-                    whisper_model="small", allow_whisper=True) -> dict:
+                    whisper_model="small", allow_whisper=True, proxy_url=None) -> dict:
     vid = video_id(url)
+    proxy = proxy_url or get_proxy()
+    ip_blocked = False
 
-    # ── Tier 1: youtube-transcript-api (fast, real captions) ────────────────────
+    # ── 1. Direct Attempt (without proxy) ──────────────────────────────────
     try:
-        return _from_captions(vid, prefer, translate_to)
+        result = _from_captions(vid, prefer, translate_to, proxy=None)
+        print("[transcript] Tier 1 (direct captions): success", file=sys.stderr)
+        return result
     except _NoCaptions:
-        print("[transcript] Tier 1: no captions found, trying yt-dlp subtitles…",
-              file=sys.stderr)
+        print("[transcript] Tier 1 (direct): no captions found, trying yt-dlp subtitles…", file=sys.stderr)
     except _HARD_CAPTION_ERRORS as e:
-        # AgeRestricted / InvalidVideoId / VideoUnplayable — genuine hard stops.
         return {"title": get_title(vid), "video_id": vid,
                 "url": f"https://www.youtube.com/watch?v={vid}",
                 "error": type(e).__name__, "captions": []}
     except VideoUnavailable as e:
-        # On VPS IPs, youtube-transcript-api raises VideoUnavailable when the
-        # watch-page HTML fetch is blocked (TLS fingerprint check fails, so it
-        # looks like the video doesn't exist). Fall through to yt-dlp which
-        # uses curl_cffi impersonation + PO tokens to bypass this.
-        print(f"[transcript] Tier 1 VideoUnavailable (likely IP-blocked, not real): {e}"
-              f" — trying yt-dlp…", file=sys.stderr)
+        print(f"[transcript] Tier 1 VideoUnavailable (direct): {e} — trying yt-dlp…", file=sys.stderr)
+        ip_blocked = True
     except Exception as e:
-        # Unexpected — never crash the workflow; fall through to yt-dlp.
-        print(f"[transcript] Tier 1 unexpected error: {type(e).__name__}: {e}",
-              file=sys.stderr)
+        err_str = str(e).lower()
+        if any(k in err_str for k in ("ip", "block", "429", "sign in", "bot")):
+            ip_blocked = True
+        print(f"[transcript] Tier 1 error (direct): {type(e).__name__}: {e}", file=sys.stderr)
 
-    # ── Tier 1b: yt-dlp subtitle endpoints ───────────────────────────────
-    # Uses TV/embedded player clients + curl_cffi Chrome impersonation.
-    # Much more robust on flagged VPS IPs than the transcript API.
     try:
-        result = _fetch_subtitles(url, vid, prefer)
-        print("[transcript] Tier 1b (yt-dlp subtitles): success", file=sys.stderr)
+        result = _fetch_subtitles(url, vid, prefer, proxy=None)
+        print("[transcript] Tier 1b (yt-dlp direct subtitles): success", file=sys.stderr)
         return result
     except _NoCaptions:
-        print("[transcript] Tier 1b: no subtitles available…",
-              file=sys.stderr)
+        print("[transcript] Tier 1b (direct): no subtitles available…", file=sys.stderr)
     except Exception as e:
-        print(f"[transcript] Tier 1b error: {type(e).__name__}: {e}",
-              file=sys.stderr)
+        err_str = str(e).lower()
+        if any(k in err_str for k in ("ip", "block", "429", "sign in", "bot")):
+            ip_blocked = True
+        print(f"[transcript] Tier 1b error (direct): {type(e).__name__}: {e}", file=sys.stderr)
 
-    # ── Tier 1c: 3rd-party API Fallback (Snapany / Snapscooper) ───────────
-    # Uses external pre-signed timedtext URLs signed with ip=0.0.0.0.
-    try:
-        return _fetch_external_api_subtitles(url, vid, prefer)
-    except _NoCaptions:
-        print("[transcript] Tier 1c (3rd-party API fallback): no subtitles returned.", file=sys.stderr)
-    except Exception as e:
-        print(f"[transcript] Tier 1c error: {type(e).__name__}: {e}", file=sys.stderr)
+    # ── 2. Proxy Fallback (if IP blocked / direct failed AND proxy is set) ──────
+    if proxy:
+        safe_proxy = proxy.split("@")[-1]
+        print(f"[transcript] Direct attempt encountered IP blocks / missing captions. Retrying via Proxy ({safe_proxy})…", file=sys.stderr)
 
-    # ── Tier 2: Whisper (audio transcription) ────────────────────────────
-    # Works for any video regardless of caption availability or IP blocking.
+        # Retry Tier 1 via Proxy
+        try:
+            result = _from_captions(vid, prefer, translate_to, proxy=proxy)
+            print("[transcript] Tier 1 (via proxy): success", file=sys.stderr)
+            return result
+        except Exception as e:
+            print(f"[transcript] Tier 1 (via proxy) error: {type(e).__name__}: {e}", file=sys.stderr)
+
+        # Retry Tier 1b via Proxy
+        try:
+            result = _fetch_subtitles(url, vid, prefer, proxy=proxy)
+            print("[transcript] Tier 1b (via proxy): success", file=sys.stderr)
+            return result
+        except Exception as e:
+            print(f"[transcript] Tier 1b (via proxy) error: {type(e).__name__}: {e}", file=sys.stderr)
+
+    # ── 3. Tier 2: Whisper Audio Transcription Fallback ───────────────────
     if not allow_whisper:
         return {"title": get_title(vid), "video_id": vid,
                 "url": f"https://www.youtube.com/watch?v={vid}",
                 "error": "NoCaptionsAvailable", "captions": []}
 
-    print("[transcript] Tier 2: falling back to Whisper transcription…", file=sys.stderr)
+    print("[transcript] Tier 2: falling back to Whisper audio transcription…", file=sys.stderr)
     try:
-        return _from_whisper(url, vid, translate_to, whisper_model)
+        return _from_whisper(url, vid, translate_to, whisper_model, proxy=proxy if (proxy and ip_blocked) else None)
     except Exception as e:
         return {"title": get_title(vid), "video_id": vid,
                 "url": f"https://www.youtube.com/watch?v={vid}",
@@ -707,13 +558,13 @@ def transcript_json(url, prefer=("en",), translate_to=None,
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(json.dumps({"error": "Usage: transcript.py <url> [allow_whisper=true] [whisper_model=small]"}))
+        print(json.dumps({"error": "Usage: transcript.py <url> [allow_whisper=true] [whisper_model=small] [proxy_url]"}))
         sys.exit(1)
 
     url_arg = sys.argv[1]
     allow_whisper_arg = sys.argv[2].lower() != "false" if len(sys.argv) > 2 else True
     whisper_model_arg = sys.argv[3] if len(sys.argv) > 3 else "small"
+    proxy_arg = sys.argv[4] if len(sys.argv) > 4 else None
 
-    result = transcript_json(url_arg, allow_whisper=allow_whisper_arg, whisper_model=whisper_model_arg)
-    # Write result to stdout as JSON
+    result = transcript_json(url_arg, allow_whisper=allow_whisper_arg, whisper_model=whisper_model_arg, proxy_url=proxy_arg)
     print(json.dumps(result, ensure_ascii=False))

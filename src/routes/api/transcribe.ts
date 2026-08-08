@@ -50,14 +50,14 @@ export const Route = createFileRoute("/api/transcribe")({
         const authErr = requireAuth(request);
         if (authErr) return authErr;
 
-        let body: { url?: string; whisperModel?: string };
+        let body: { url?: string; whisperModel?: string; proxy?: string };
         try {
           body = (await request.json()) as typeof body;
         } catch {
           return json({ error: "Invalid JSON" }, 400);
         }
 
-        const { url, whisperModel = "small" } = body;
+        const { url, whisperModel = "small", proxy: bodyProxy } = body;
         if (!url || typeof url !== "string") {
           return json({ error: "url required" }, 400);
         }
@@ -66,18 +66,29 @@ export const Route = createFileRoute("/api/transcribe")({
         const script = getScriptPath();
         const logs: string[] = [];
 
+        const proxy = bodyProxy?.trim() || process.env.YOUTUBE_PROXY || process.env.HTTPS_PROXY || "";
+
         logs.push("starting Whisper fallback via python transcript script…");
         logs.push(`model: ${whisperModel}`);
+        if (proxy) logs.push(`proxy: configured (${proxy.replace(/:[^:@]+@/, ":***@")})`);
 
         try {
           logs.push("downloading audio via yt-dlp…");
+          const args = [script, url, "true", whisperModel];
+          if (proxy) args.push(proxy);
+          const env = {
+            ...process.env,
+            ...(proxy ? { YOUTUBE_PROXY: proxy, HTTPS_PROXY: proxy, HTTP_PROXY: proxy } : {}),
+          };
+
           const stdout = execFileSync(
             python,
-            [script, url, "true", whisperModel],
+            args,
             {
               timeout: 900_000, // 15 min max for large videos
               encoding: "utf8",
               maxBuffer: 10 * 1024 * 1024,
+              env,
             }
           );
 

@@ -141,6 +141,10 @@ function ytDlpStream(
   if (existsSync(cookiesPath)) {
     args.push("--cookies", cookiesPath);
   }
+  const proxy = process.env.YOUTUBE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+  if (proxy) {
+    args.push("--proxy", proxy);
+  }
   if (verbose) {
     args.push("--verbose");
   } else {
