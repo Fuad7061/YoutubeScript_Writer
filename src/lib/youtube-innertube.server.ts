@@ -208,7 +208,20 @@ export async function innertubeCaptions(
 
   try {
     const yt = await getYt();
-    const info = await withTimeout(yt.getInfo(id, { client: "IOS" }), 12_000, "getInfo");
+    let info: any = null;
+    const clients: Array<"IOS" | "ANDROID" | "WEB"> = ["IOS", "ANDROID", "WEB"];
+    for (const client of clients) {
+      try {
+        const res = await withTimeout(yt.getInfo(id, { client }), 12_000, `getInfo (${client})`);
+        if (res?.captions?.caption_tracks?.length) {
+          info = res;
+          break;
+        }
+      } catch (err) {
+        console.warn(`[innertubeCaptions] client ${client} getInfo failed:`, (err as Error).message);
+      }
+    }
+    if (!info) return null;
     const tracklist = info.captions;
     const tracks = tracklist?.caption_tracks ?? [];
     if (tracks.length === 0) return null;

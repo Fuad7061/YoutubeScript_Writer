@@ -103,7 +103,7 @@ async function resolveInnertube(rawUrl: string, quality: number): Promise<Picked
 // (web_embedded, tv_embedded, tv, android_vr) are tried as fallbacks.
 // Override via YTDLP_PLAYER_CLIENTS env var for experimentation.
 const YTDLP_PLAYER_CLIENTS =
-  process.env.YTDLP_PLAYER_CLIENTS || "web,web_embedded,tv_embedded,tv,android_vr";
+  process.env.YTDLP_PLAYER_CLIENTS || "android,mweb,ios,web";
 
 type YtDlpStreamResult =
   | { ok: true; stream: ReadableStream<Uint8Array>; mime: string }

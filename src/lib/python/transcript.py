@@ -31,15 +31,24 @@ _HARD_CAPTION_ERRORS = (AgeRestricted, InvalidVideoId, VideoUnplayable)
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
 
-# Player clients in priority order. tv_embedded and ios clients are the least
-# bot-checked on VPS/datacenter IPs. web is kept as a fallback for when
-# cookies are configured (logged-in sessions). Override via YTDLP_PLAYER_CLIENTS.
+# Player clients in priority order. android, mweb, ios, and web are the most
+# reliable clients for captions and audio streams on datacenter IPs.
 _YDL_PLAYER_CLIENTS = os.environ.get(
-    "YTDLP_PLAYER_CLIENTS", "tv_embedded,web_embedded,ios,web,tv,android_vr").split(",")
+    "YTDLP_PLAYER_CLIENTS", "android,mweb,ios,web").split(",")
 
 
 def _ydl_opts(extra=None):
     """yt-dlp options that survive YouTube's bot checks from datacenter IPs."""
+    pot_url = os.environ.get("POT_PROVIDER_URL", "http://127.0.0.1:4416/token")
+    yt_args = {
+        "player_client": _YDL_PLAYER_CLIENTS,
+        "po_token": [
+            f"web+{pot_url}",
+            f"mweb+{pot_url}",
+            f"android+{pot_url}",
+            f"ios+{pot_url}",
+        ],
+    }
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -47,7 +56,7 @@ def _ydl_opts(extra=None):
         "noplaylist": True,
         "socket_timeout": 30,
         "retries": 5,
-        "extractor_args": {"youtube": {"player_client": _YDL_PLAYER_CLIENTS}},
+        "extractor_args": {"youtube": yt_args},
     }
     # YouTube cookies (Netscape cookies.txt) — when present, yt-dlp sends them so
     # YouTube sees a logged-in, verified session. The most reliable way to pass
@@ -80,14 +89,21 @@ def _extract_ydl(opts, url, download=False):
     """
     import yt_dlp
     opts = dict(opts)
-    opts["impersonate"] = "chrome"
+    try:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+        opts["impersonate"] = ImpersonateTarget("chrome")
+    except Exception:
+        opts.pop("impersonate", None)
+
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=download)
-    except Exception:
-        opts.pop("impersonate", None)
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=download)
+    except Exception as e:
+        if "impersonate" in opts:
+            opts.pop("impersonate", None)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=download)
+        raise e
 
 
 class _NoCaptions(Exception):
