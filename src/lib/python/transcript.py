@@ -21,14 +21,11 @@ from youtube_transcript_api import (
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
 
-# `web` is listed FIRST: it is the only player client whose extraction fetches
-# the YouTube watch page, and that page carries the attestation challenge
-# (ytAtN) the bgutil PO-token provider needs to generate a token locally.
-# The other clients call the Innertube API directly and never see the page,
-# forcing the provider to fetch the challenge itself from this (blocked) IP.
-# Override with YTDLP_PLAYER_CLIENTS env var for experimentation.
+# Player clients in priority order. `web` is listed first: when YouTube
+# cookies are configured this client tends to be the most reliable. The others
+# are tried as fallbacks. Override via YTDLP_PLAYER_CLIENTS env var.
 _YDL_PLAYER_CLIENTS = os.environ.get(
-    "YTDLP_PLAYER_CLIENTS", "web,tv_embedded,tv,web_embedded,android_vr").split(",")
+    "YTDLP_PLAYER_CLIENTS", "web,web_embedded,tv_embedded,tv,android_vr").split(",")
 
 
 def _ydl_opts(extra=None):
@@ -45,15 +42,22 @@ def _ydl_opts(extra=None):
     # YouTube cookies (Netscape cookies.txt) — when present, yt-dlp sends them so
     # YouTube sees a logged-in, verified session. The most reliable way to pass
     # the "Sign in to confirm you're not a bot" check on a flagged datacenter IP.
+    # Python's http.cookiejar is strict: every domain column must start with ".".
     cookies_path = os.environ.get("YOUTUBE_COOKIES_PATH", "/data/youtube-cookies.txt")
     if os.path.exists(cookies_path):
-        opts["cookiefile"] = cookies_path
-    # Self-hosted PO token provider (bgutil-ytdlp-pot-provider container) —
-    # defeats the "Sign in to confirm you're not a bot" check on flagged
-    # datacenter IPs. Without BGUTIL_POT_URL set, yt-dlp runs as before.
-    pot_url = os.environ.get("BGUTIL_POT_URL")
-    if pot_url:
-        opts["extractor_args"]["youtubepot-bgutilhttp"] = [f"base_url={pot_url}"]
+        try:
+            with open(cookies_path, "r", encoding="utf-8", errors="replace") as fh:
+                body = fh.read()
+            data_lines = [l for l in body.split("\n") if l.strip() and not l.startswith("#")]
+            well_formed = data_lines and all("\t" in l and l.split("\t")[0].startswith(".") for l in data_lines)
+            if well_formed:
+                opts["cookiefile"] = cookies_path
+            else:
+                print(f"[transcript] WARNING: {cookies_path} is not in valid Netscape format "
+                      f"(domain column must start with '.youtube.com') — skipping cookies. "
+                      f"Re-export from your browser and re-paste in Settings.", file=sys.stderr)
+        except Exception as e:
+            print(f"[transcript] WARNING: could not read cookies: {e}", file=sys.stderr)
     if extra:
         opts.update(extra)
     return opts

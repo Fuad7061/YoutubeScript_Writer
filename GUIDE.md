@@ -14,7 +14,6 @@ it from n8n instead of paid tools like noteai or snapscooper.
 | yt-dlp | Downloads video info/audio/captions — also handles Facebook, TikTok, Instagram, X, Vimeo, 1000+ sites | Free |
 | youtube-transcript-api | Fast captions path | Free |
 | faster-whisper | Transcribes audio when a video has no captions | Free (runs on your CPU) |
-| PO token provider (bundled) | Defeats YouTube's "not a bot" check on VPS IPs | Free (open source, built into the app) |
 | n8n | Your automation workflows | Free |
 | VPS + Coolify | The machine everything runs on | Already yours |
 
@@ -31,10 +30,6 @@ For a YouTube URL the app tries, in order:
    browser TLS impersonation (curl_cffi). This works for most videos.
 2. **Tier 2 — Whisper fallback** (only if no captions): yt-dlp downloads the
    audio, faster-whisper transcribes it on your VPS.
-3. **PO tokens (automatic)**: the container's entrypoint starts a bundled
-   token provider on 127.0.0.1:4416 before the app boots. yt-dlp fetches
-   fresh tokens from it before talking to YouTube, so the "Sign in to
-   confirm you're not a bot" page never appears. No setup needed.
 
 Non-YouTube URLs (Facebook, TikTok, ...) go straight to yt-dlp.
 
@@ -52,21 +47,31 @@ That's it. Your app is rebuilt with the newest code.
 
 ---
 
-## 4. PO tokens — already included, nothing to do
+## 4. YouTube cookies (required on a flagged VPS IP)
 
-The PO token provider is **built into the app container**. When the container
-starts, its entrypoint automatically:
+YouTube aggressively bot-checks datacenter/VPS IP ranges and shows *"Sign in
+to confirm you're not a bot"*. The fix is to give yt-dlp cookies from a browser
+where you're logged into YouTube — YouTube then sees a verified, logged-in
+session instead of a bare server IP.
 
-1. Starts the bundled token provider on `127.0.0.1:4416` (inside the container).
-2. Waits until it is ready (you'll see `PO token provider ready on
-   127.0.0.1:4416` in the app logs).
-3. Then starts the app.
+### One-time setup
 
-yt-dlp talks to it automatically — no ports, no extra containers, no env vars.
+1. In Firefox or Chrome, install the extension **"Get cookies.txt LOCALLY"**.
+2. Go to [youtube.com](https://www.youtube.com) and make sure you're logged in.
+3. Click the extension icon → **Export** → copies a `cookies.txt` to your clipboard.
+4. In the app → **Settings** → scroll to **YouTube cookies** → paste into the
+   textarea → **Save cookies**.
 
-> Advanced only: if you ever run an external provider on another host, set the
-> `BGUTIL_POT_URL` env var (e.g. `http://<ip>:4416`) on the app and it will use
-> that instead. Skip this unless you know you need it.
+A status line appears showing the file size and when it was saved.
+
+### When it breaks again
+
+Cookies expire eventually (weeks to months). When downloads start failing,
+re-export from your browser and re-paste. Settings shows a **remove** button to
+clear stale cookies first if you want.
+
+> The textarea also accepts a raw cookie header string
+> (`SID=abc; HSID=def; ...`) — whatever your browser gives you works.
 
 ---
 
@@ -118,8 +123,8 @@ You tested noteai and snapscooper from your VPS and they worked — that does
   from a different IP.
 - YouTube blocking is **intermittent**: some days, some videos, some client
   types work fine; that's why you'll sometimes see it working from the VPS.
-  The app's ladder (impersonation + TV clients + PO tokens) is your free,
-  permanent defense.
+  The app's ladder (impersonation + multiple player clients + your YouTube
+  cookies) is your free, permanent defense.
 
 **Bottom line:** your own app is more reliable than the free tier of those
 third-party sites, costs nothing per request, and does not depend on their
@@ -132,20 +137,21 @@ uptime or their limits.
 | Problem | Check |
 |---|---|
 | App returns 401 | Use `Authorization: Bearer <APP_PASSWORD>`; check the env var in Coolify |
-| "Sign in to confirm you're not a bot" | The PO token flow isn't completing yet — enable debug mode (see below) and share the log line |
+| "Sign in to confirm you're not a bot" | Re-export your YouTube cookies (they expired) and re-paste in Settings |
 | Whisper fallback is slow | Change `whisperModel` to `base` (faster, slightly less accurate) |
 | Non-YouTube URL fails | That site may have changed; check the app logs for the yt-dlp error message |
 | No captions for a YouTube video | Normal — that video has no captions; the app falls back to Whisper automatically |
-| Server crashes / 502 with no clear cause | Check logs for `WritableStream` or `ERR_INVALID_STATE` — update to latest deploy |
 
 ### Enable debug mode (temporary)
 
-To see exactly what the PO token flow is doing, set this env var in Coolify:
+To see yt-dlp's full diagnostics, set this env var in Coolify:
 
 - Name: `YTDLP_VERBOSE`
 - Value: `1`
 
-Then redeploy and try one video download. In the app logs, the `[media-proxy] yt-dlp stderr:` line will now show the full PO-token steps. Paste that line here and I'll fix the exact issue. (Set the value back to `0` or remove it when done — verbose mode is noisy.)
+Then redeploy and try one download. The `[media-proxy] yt-dlp stderr:` log line
+will show yt-dlp's detailed output. (Remove the env var when done — verbose mode
+is noisy.)
 
 ---
 
@@ -154,8 +160,7 @@ Then redeploy and try one video download. In the app logs, the `[media-proxy] yt
 ```bash
 # SSH into VPS, then:
 
-# Check the app container logs (look for "PO token provider ready" and the
-# provider's own lines — the provider prints its logs to the same stream)
+# Check the app container logs
 docker logs <your-app-container-name> --tail 50
 
 # Restart the app container (or just click Deploy in Coolify)

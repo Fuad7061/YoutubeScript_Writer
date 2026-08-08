@@ -98,14 +98,10 @@ async function resolveInnertube(rawUrl: string, quality: number): Promise<Picked
  * TLS fingerprint (curl_cffi impersonation) so the request looks like it
  * comes from a real browser instead of a datacenter server.
  */
-// `web` is listed FIRST on purpose: it is the only player client whose
-// extraction fetches the YouTube watch page, and that page carries the
-// attestation challenge (ytAtN) that the bgutil PO-token provider needs to
-// generate a token. The other clients (tv_embedded, tv, ...) call the
-// Innertube player API directly and never see the watch page, so the
-// provider would have to fetch the challenge itself from this (blocked) IP.
-// Order matters: web → web_embedded → tv_embedded → tv → android_vr.
-// YTDLP_PLAYER_CLIENTS can be overridden via env for experimentation.
+// Player clients in priority order. `web` is listed first: when YouTube
+// cookies are configured this client tends to be the most reliable. The others
+// (web_embedded, tv_embedded, tv, android_vr) are tried as fallbacks.
+// Override via YTDLP_PLAYER_CLIENTS env var for experimentation.
 const YTDLP_PLAYER_CLIENTS =
   process.env.YTDLP_PLAYER_CLIENTS || "web,web_embedded,tv_embedded,tv,android_vr";
 
@@ -124,7 +120,7 @@ function ytDlpStream(
     track === "audio"
       ? "bestaudio[ext=m4a]/bestaudio/best"
       : `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best[ext=mp4]/best`;
-  // YTDLP_VERBOSE=1 drops --quiet/--no-warnings so the POT framework logs
+  // YTDLP_VERBOSE=1 drops --quiet/--no-warnings so yt-dlp's diagnostics
   // (and any bot-check errors) are captured in the media-proxy log.
   const verbose = process.env.YTDLP_VERBOSE === "1";
   const args = [
@@ -138,13 +134,6 @@ function ytDlpStream(
     "--extractor-args",
     `youtube:player_client=${YTDLP_PLAYER_CLIENTS}`,
   ];
-  // Self-hosted PO token provider (bgutil-ytdlp-pot-provider container) —
-  // defeats the "Sign in to confirm you're not a bot" check on flagged
-  // datacenter IPs. Without BGUTIL_POT_URL set, yt-dlp runs as before.
-  const potUrl = process.env.BGUTIL_POT_URL;
-  if (potUrl) {
-    args.push("--extractor-args", `youtubepot-bgutilhttp:base_url=${potUrl}`);
-  }
   // YouTube cookies (Netscape cookies.txt) — when present, yt-dlp sends them so
   // YouTube sees a logged-in, verified session. This is the most reliable way to
   // pass the "Sign in to confirm you're not a bot" check on a flagged IP.

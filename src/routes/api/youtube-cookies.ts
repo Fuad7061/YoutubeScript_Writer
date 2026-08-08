@@ -53,20 +53,41 @@ export const Route = createFileRoute("/api/youtube-cookies")({
         if (!raw) return json({ error: "cookies required" }, 400);
 
         // Accept either a full Netscape cookies.txt or a header-style cookie
-      // string ("name=value; name2=value2"). Normalise to Netscape format.
+        // string ("name=value; name2=value2"). Normalise to Netscape format.
+        // Python's http.cookiejar (used by yt-dlp) is STRICT: the domain MUST
+        // begin with a dot (".youtube.com") or loading raises AssertionError.
         let content: string;
         if (raw.includes("\t") || raw.startsWith("# Netscape HTTP Cookie File")) {
-          content = raw;
+          // Netscape file from a browser extension. Fix domains that are missing
+          // the leading dot so Python's strict cookiejar will accept them.
+          content = raw
+            .split("\n")
+            .map((line) => {
+              const t = line.trim();
+              if (!t || t.startsWith("#")) return line;
+              const f = line.split("\t");
+              if (f.length >= 6 && f[0] && !f[0].startsWith(".")) {
+                f[0] = "." + f[0];
+              }
+              return f.join("\t");
+            })
+            .join("\n");
+          if (!content.endsWith("\n")) content += "\n";
         } else {
-          // Convert "k=v; k2=v2" → one "youtube.com\tTRUE\t/\tTRUE\t0\tk\tv" per pair
+          // Convert "k=v; k2=v2" → ".youtube.com\tTRUE\t/\tTRUE\t0\tk\tv"
           const pairs = raw
-            .split(";")
+            .split(/[;\n]/)
             .map((p) => p.trim())
             .filter(Boolean)
             .map((p) => p.split("="))
             .filter((kv) => kv.length >= 2)
             .map(([k, ...v]) => [k.trim(), v.join("=").trim()]);
-          const lines = ["# Netscape HTTP Cookie File", ...pairs.map(([k, v]) => `youtube.com\tTRUE\t/\tTRUE\t0\t${k}\t${v}`)];
+          if (pairs.length === 0) return json({ error: "no cookie pairs found" }, 400);
+          const lines = [
+            "# Netscape HTTP Cookie File",
+            "# exported for yt-dlp — domain leading dot required by Python cookiejar",
+            ...pairs.map(([k, v]) => `.youtube.com\tTRUE\t/\tTRUE\t0\t${k}\t${v}`),
+          ];
           content = lines.join("\n") + "\n";
         }
 

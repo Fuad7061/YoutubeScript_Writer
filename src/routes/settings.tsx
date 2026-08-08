@@ -558,7 +558,7 @@ function CookiesPanel() {
       <Textarea
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder={"# Paste either format:\n#\n# 1) Netscape cookies.txt (from a browser export extension):\n# Netscape HTTP Cookie File\n# .youtube.com\tTRUE\t/\tTRUE\t0\tSID\t...\n#\n# 2) A cookie header string:\n# SID=abc; HSID=def; SSID=ghi"}
+        placeholder={"# Paste YouTube cookies in either format:\n#\n# 1) (recommended) Full cookies.txt from a browser extension like\n#     \"Get cookies.txt LOCALLY\" — just export youtube.com and paste.\n#\n# 2) Raw cookie string, e.g.\n#     SID=abc; HSID=def; SSID=ghi; __Secure-3PSID=...\n#\n# Both are normalised server-side to the format yt-dlp needs."}
         className="min-h-[120px] font-mono text-xs"
       />
       <div className="flex items-center gap-2">
