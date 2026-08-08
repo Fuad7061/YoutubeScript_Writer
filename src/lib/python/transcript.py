@@ -506,14 +506,17 @@ def _from_whisper(url, vid, translate_to, size):
                            tinfo.language, task, segments)
 
 
-def _fetch_snapany_subtitles(url, vid, prefer):
-    """Fetch captions via Snapany API fallback when YouTube bot-checks the server IP."""
-    headers = {
+def _fetch_external_api_subtitles(url, vid, prefer):
+    """Fetch captions via 3rd party APIs (Snapany / Snapscooper) when YouTube bot-checks the server IP."""
+    print(f"[transcript] Tier 1c: attempting 3rd-party API fallback for {vid}…", file=sys.stderr)
+
+    # 1. Snapany API
+    headers_snapany = {
         "accept": "*/*",
         "accept-language": "en",
         "content-type": "application/json",
-        "g-footer": "2f709202d3c3805991cc8714f6887fd263a70f6584519f07f2559bc0a42d1ddf",
-        "g-timestamp": "1786207681596",
+        "g-footer": os.environ.get("SNAPANY_G_FOOTER", "2f709202d3c3805991cc8714f6887fd263a70f6584519f07f2559bc0a42d1ddf"),
+        "g-timestamp": os.environ.get("SNAPANY_G_TIMESTAMP", "1786207681596"),
         "g-timezone": "Asia/Dhaka",
         "origin": "https://snapany.com",
         "referer": "https://snapany.com/",
@@ -524,7 +527,7 @@ def _fetch_snapany_subtitles(url, vid, prefer):
         res = curl_post(
             "https://api.snapany.com/v1/extract/subtitles",
             json={"url": f"https://www.youtube.com/watch?v={vid}"},
-            headers=headers,
+            headers=headers_snapany,
             impersonate="chrome",
             timeout=15,
         )
@@ -548,6 +551,7 @@ def _fetch_snapany_subtitles(url, vid, prefer):
                         total = round(max((c["start"] + c["dur"] for c in caps), default=0.0), 3)
                         chosen_name = track.get("language_name") or "English"
                         chosen_tag = track.get("language_tag") or "en"
+                        print("[transcript] Tier 1c (Snapany API): success", file=sys.stderr)
                         return {
                             "title": data.get("title") or get_title(vid),
                             "video_id": vid,
@@ -567,8 +571,69 @@ def _fetch_snapany_subtitles(url, vid, prefer):
                             "transcript": " ".join(c["text"] for c in caps),
                             "captions": caps,
                         }
+        else:
+            print(f"[transcript] Tier 1c Snapany returned status {res.status_code}", file=sys.stderr)
     except Exception as e:
-        print(f"[transcript] Tier 1c (Snapany API) fallback exception: {e}", file=sys.stderr)
+        print(f"[transcript] Tier 1c Snapany exception: {e}", file=sys.stderr)
+
+    # 2. Snapscooper API fallback
+    headers_scooper = {
+        "accept": "application/json",
+        "accept-language": "en-US,en;q=0.9",
+        "content-type": "application/json",
+        "origin": "https://snapscooper.com",
+        "referer": "https://snapscooper.com/tools/yt1",
+        "user-agent": BROWSER_UA,
+    }
+    try:
+        from curl_cffi.requests import post as curl_post
+        res = curl_post(
+            "https://snapscooper.com/api/tool/post-info",
+            json={"toolId": "youtube", "url": f"https://www.youtube.com/watch?v={vid}", "highres": False},
+            headers=headers_scooper,
+            impersonate="chrome",
+            timeout=15,
+        )
+        if res.status_code == 200:
+            data = res.json()
+            sub_tracks = data.get("subtitles") or data.get("captions") or []
+            if sub_tracks:
+                track = sub_tracks[0]
+                for t in sub_tracks:
+                    lang = (t.get("language_tag") or t.get("lang") or "").lower()
+                    if lang == "en" or lang.startswith("en"):
+                        track = t
+                        break
+                urls = track.get("urls") or []
+                item = next((u for u in urls if u.get("format") in ("srt", "vtt", "json3")), None) or (urls[0] if urls else None)
+                sub_url = item.get("url") if isinstance(item, dict) else item
+                if sub_url:
+                    raw_sub = _fetch_vtt(sub_url)
+                    caps = _parse_vtt(raw_sub)
+                    if caps:
+                        total = round(max((c["start"] + c["dur"] for c in caps), default=0.0), 3)
+                        print("[transcript] Tier 1c (Snapscooper API): success", file=sys.stderr)
+                        return {
+                            "title": data.get("title") or get_title(vid),
+                            "video_id": vid,
+                            "url": f"https://www.youtube.com/watch?v={vid}",
+                            "source": "snapscooper-captions",
+                            "language": track.get("language_name", "English"),
+                            "language_code": track.get("language_tag", "en"),
+                            "is_generated": True,
+                            "translated_to": None,
+                            "available_languages": [],
+                            "duration_seconds": total,
+                            "duration": hms(total),
+                            "caption_count": len(caps),
+                            "transcript": " ".join(c["text"] for c in caps),
+                            "captions": caps,
+                        }
+        else:
+            print(f"[transcript] Tier 1c Snapscooper returned status {res.status_code}", file=sys.stderr)
+    except Exception as e:
+        print(f"[transcript] Tier 1c Snapscooper exception: {e}", file=sys.stderr)
+
     raise _NoCaptions
 
 
@@ -615,14 +680,12 @@ def transcript_json(url, prefer=("en",), translate_to=None,
         print(f"[transcript] Tier 1b error: {type(e).__name__}: {e}",
               file=sys.stderr)
 
-    # ── Tier 1c: Snapany API Fallback ────────────────────────────────────
-    # Uses external pre-signed timedtext URL signed with ip=0.0.0.0.
+    # ── Tier 1c: 3rd-party API Fallback (Snapany / Snapscooper) ───────────
+    # Uses external pre-signed timedtext URLs signed with ip=0.0.0.0.
     try:
-        result = _fetch_snapany_subtitles(url, vid, prefer)
-        print("[transcript] Tier 1c (Snapany API): success", file=sys.stderr)
-        return result
+        return _fetch_external_api_subtitles(url, vid, prefer)
     except _NoCaptions:
-        pass
+        print("[transcript] Tier 1c (3rd-party API fallback): no subtitles returned.", file=sys.stderr)
     except Exception as e:
         print(f"[transcript] Tier 1c error: {type(e).__name__}: {e}", file=sys.stderr)
 
