@@ -132,7 +132,7 @@ uptime or their limits.
 | Problem | Check |
 |---|---|
 | App returns 401 | Use `Authorization: Bearer <APP_PASSWORD>`; check the env var in Coolify |
-| "Sign in to confirm you're not a bot" | Check the app logs for `PO token provider ready`; if missing, look at `/tmp/bgutil-provider.log` inside the container |
+| "Sign in to confirm you're not a bot" | Check the app logs for `PO token provider ready`; if missing, the provider's own error lines are in the same logs right above the warning |
 | Whisper fallback is slow | Change `whisperModel` to `base` (faster, slightly less accurate) |
 | Non-YouTube URL fails | That site may have changed; check the app logs for the yt-dlp error message |
 | No captions for a YouTube video | Normal — that video has no captions; the app falls back to Whisper automatically |
@@ -144,11 +144,9 @@ uptime or their limits.
 ```bash
 # SSH into VPS, then:
 
-# Check the app container logs (look for "PO token provider ready")
+# Check the app container logs (look for "PO token provider ready" and the
+# provider's own lines — the provider prints its logs to the same stream)
 docker logs <your-app-container-name> --tail 50
-
-# Check the bundled provider's own log (inside the container)
-docker exec <your-app-container-name> cat /tmp/bgutil-provider.log
 
 # Restart the app container (or just click Deploy in Coolify)
 docker restart <your-app-container-name>

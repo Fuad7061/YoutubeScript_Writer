@@ -147,8 +147,15 @@ function ytDlpStream(
       clearTimeout(timer);
       if (!ok) {
         try { child.kill("SIGKILL"); } catch {}
-        void writer.abort(new Error(`yt-dlp failed: ${reason ?? ""}`));
-        resolve({ ok: false, reason: reason ?? (stderrTail.slice(-200) || "no stream output") });
+        const detail = stderrTail.slice(-400);
+        const msg = [reason ?? "yt-dlp failed", detail && `stderr: ${detail}`]
+          .filter(Boolean)
+          .join(" — ")
+          .slice(0, 600);
+        // The browser only sees the status code; log the real error here.
+        console.error(`[media-proxy] yt-dlp failed for ${rawUrl}: ${msg}`);
+        void writer.abort(new Error(msg));
+        resolve({ ok: false, reason: msg });
       } else {
         resolve({ ok: true, stream: readable, mime });
       }
@@ -158,6 +165,10 @@ function ytDlpStream(
     const timer = setTimeout(() => finish(false, "timeout: no first byte within 90s"), 90_000);
     child.stderr.on("data", (d: Buffer) => {
       stderrTail = (stderrTail + d.toString()).slice(-400);
+    });
+    child.stdout.on("end", () => {
+      if (settled) void writer.close();
+      else finish(false, "yt-dlp exited without producing a stream");
     });
     child.stdout.on("data", (d: Buffer) => {
       if (!settled) finish(true);
