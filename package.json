@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "postinstall": "python3 -m venv fast-whisper-env && ./fast-whisper-env/bin/pip install --quiet youtube-transcript-api yt-dlp faster-whisper || echo 'Warning: Failed to setup python venv. Run manually: python3 -m venv fast-whisper-env && ./fast-whisper-env/bin/pip install youtube-transcript-api yt-dlp faster-whisper'"
+    "postinstall": "python3 -m venv fast-whisper-env && ./fast-whisper-env/bin/pip install --quiet --upgrade 'youtube-transcript-api' 'yt-dlp' 'curl_cffi>=0.10,<0.16' 'faster-whisper' || echo 'Warning: Failed to setup python venv. Run manually: python3 -m venv fast-whisper-env && ./fast-whisper-env/bin/pip install youtube-transcript-api yt-dlp \"curl_cffi>=0.10,<0.16\" faster-whisper'"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.5",

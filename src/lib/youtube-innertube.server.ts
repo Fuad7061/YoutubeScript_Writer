@@ -54,7 +54,11 @@ function getYt(): Promise<Innertube> {
     ytPromise = Innertube.create({
       fetch: boundFetch,
       cache: undefined,
-      retrieve_player: false,
+      // Do NOT set retrieve_player: false — that prevents caption_tracks from
+      // being populated in getInfo(), causing innertubeCaptions() to always
+      // return null. generate_session_locally avoids an extra network round-trip
+      // for session init which can fail on some VPS network configs.
+      generate_session_locally: true,
     }).catch((e) => {
       ytPromise = undefined;
       throw e;

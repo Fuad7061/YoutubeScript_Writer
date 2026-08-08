@@ -34,6 +34,9 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg python3 python3-venv python3-pip wget && \
     python3 -m venv /app/fast-whisper-env && \
+    # Install with --upgrade: yt-dlp and youtube-transcript-api must be current.
+    # YouTube changes its player JS and API endpoints frequently; an old version
+    # will silently fail even when impersonation and cookies are working.
     /app/fast-whisper-env/bin/pip install --no-cache-dir --upgrade \
         youtube-transcript-api yt-dlp "curl_cffi>=0.10,<0.16" faster-whisper \
         bgutil-ytdlp-pot-provider && \

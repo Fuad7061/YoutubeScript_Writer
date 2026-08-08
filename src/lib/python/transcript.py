@@ -17,23 +17,25 @@ from youtube_transcript_api import (
     AgeRestricted, InvalidVideoId, VideoUnplayable,
 )
 
-# Errors that mean "the video itself can't be played" (no point retrying or
-# falling back to Whisper). Everything else that subclasses
-# CouldNotRetrieveTranscript (IpBlocked, RequestBlocked, PoTokenRequired, ...)
-# means the IP/session was blocked, not the video — retry, then fall through
-# to the yt-dlp tiers which use impersonation + cookies + PO tokens.
-_HARD_CAPTION_ERRORS = (VideoUnavailable, AgeRestricted, InvalidVideoId, VideoUnplayable)
+# Errors that definitively mean the *video* cannot be played — no point
+# retrying or falling back to Whisper.
+# NOTE: VideoUnavailable from youtube-transcript-api on VPS IPs is often an
+# IP-block masquerading as "video unavailable" (the watch-page HTML doesn't
+# load so the library can't confirm the video exists). We intentionally leave
+# VideoUnavailable OUT of this tuple so it falls through to yt-dlp, which uses
+# impersonation + PO tokens and can often still fetch the video.
+_HARD_CAPTION_ERRORS = (AgeRestricted, InvalidVideoId, VideoUnplayable)
 
 # Chrome 150 fingerprint so YouTube sees requests that look like a real
 # browser instead of a server (matters on VPS/datacenter egress IPs).
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
 
-# Player clients in priority order. `web` is listed first: when YouTube
-# cookies are configured this client tends to be the most reliable. The others
-# are tried as fallbacks. Override via YTDLP_PLAYER_CLIENTS env var.
+# Player clients in priority order. tv_embedded and ios clients are the least
+# bot-checked on VPS/datacenter IPs. web is kept as a fallback for when
+# cookies are configured (logged-in sessions). Override via YTDLP_PLAYER_CLIENTS.
 _YDL_PLAYER_CLIENTS = os.environ.get(
-    "YTDLP_PLAYER_CLIENTS", "web,web_embedded,tv_embedded,tv,android_vr").split(",")
+    "YTDLP_PLAYER_CLIENTS", "tv_embedded,web_embedded,ios,web,tv,android_vr").split(",")
 
 
 def _ydl_opts(extra=None):
@@ -317,16 +319,10 @@ def _fetch_subtitles(url, vid, prefer):
     if not url2:
         raise _NoCaptions
 
-    # Subtitle files are hosted on YouTube's own endpoints (timedtext),
-    # which also bot-check server fingerprints — fetch like a browser.
-    req = urllib.request.Request(url2, headers={
-        "user-agent": BROWSER_UA,
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "referer": "https://www.youtube.com/",
-    })
-    with urllib.request.urlopen(req, timeout=30) as r:
-        raw = r.read().decode("utf-8", "replace")
+    # Subtitle files are hosted on YouTube's timedtext CDN which also
+    # bot-checks TLS fingerprints from datacenter IPs. Use curl_cffi Chrome
+    # impersonation when available, fall back to plain urllib.
+    raw = _fetch_vtt(url2)
 
     caps = _parse_vtt(raw)
     if not caps:
@@ -345,6 +341,39 @@ def _fetch_subtitles(url, vid, prefer):
         "caption_count": len(caps), "transcript": " ".join(c["text"] for c in caps),
         "captions": caps,
     }
+
+def _fetch_vtt(url2: str) -> str:
+    """Fetch a VTT/subtitle URL using Chrome TLS impersonation when available.
+
+    YouTube's timedtext CDN endpoints perform TLS fingerprint checks on VPS
+    datacenter IP ranges (same bot-check as the main site). curl_cffi's Chrome
+    impersonation bypasses this. Falls back to plain urllib when curl_cffi is
+    not installed.
+    """
+    headers = {
+        "user-agent": BROWSER_UA,
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "referer": "https://www.youtube.com/",
+    }
+    try:
+        from curl_cffi.requests import get as curl_get
+        resp = curl_get(url2, headers=headers, impersonate="chrome", timeout=30)
+        resp.raise_for_status()
+        return resp.text
+    except ImportError:
+        pass  # curl_cffi not installed — fall back to urllib
+    except Exception as e:
+        print(f"[transcript] curl_cffi VTT fetch failed: {type(e).__name__}: {e}", file=sys.stderr)
+        # Fall through to urllib for one more attempt
+
+    req = urllib.request.Request(url2, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception as e:
+        print(f"[transcript] urllib VTT fetch also failed: {type(e).__name__}: {e}", file=sys.stderr)
+        raise _NoCaptions
 
 
 def _parse_vtt(raw):
@@ -437,36 +466,54 @@ def _from_whisper(url, vid, translate_to, size):
 def transcript_json(url, prefer=("en",), translate_to=None,
                     whisper_model="small", allow_whisper=True) -> dict:
     vid = video_id(url)
+
+    # ── Tier 1: youtube-transcript-api (fast, real captions) ────────────────────
     try:
-        return _from_captions(vid, prefer, translate_to)      # Tier 1
+        return _from_captions(vid, prefer, translate_to)
     except _NoCaptions:
-        pass
+        print("[transcript] Tier 1: no captions found, trying yt-dlp subtitles…",
+              file=sys.stderr)
     except _HARD_CAPTION_ERRORS as e:
-        # VideoUnavailable / AgeRestricted / InvalidVideoId / VideoUnplayable —
-        # no point retrying a broken or age-gated video.
+        # AgeRestricted / InvalidVideoId / VideoUnplayable — genuine hard stops.
         return {"title": get_title(vid), "video_id": vid,
                 "url": f"https://www.youtube.com/watch?v={vid}",
                 "error": type(e).__name__, "captions": []}
+    except VideoUnavailable as e:
+        # On VPS IPs, youtube-transcript-api raises VideoUnavailable when the
+        # watch-page HTML fetch is blocked (TLS fingerprint check fails, so it
+        # looks like the video doesn't exist). Fall through to yt-dlp which
+        # uses curl_cffi impersonation + PO tokens to bypass this.
+        print(f"[transcript] Tier 1 VideoUnavailable (likely IP-blocked, not real): {e}"
+              f" — trying yt-dlp…", file=sys.stderr)
     except Exception as e:
-        # Unexpected — never crash the workflow; fall through to yt-dlp tiers.
+        # Unexpected — never crash the workflow; fall through to yt-dlp.
         print(f"[transcript] Tier 1 unexpected error: {type(e).__name__}: {e}",
               file=sys.stderr)
 
+    # ── Tier 1b: yt-dlp subtitle endpoints ───────────────────────────────
+    # Uses TV/embedded player clients + curl_cffi Chrome impersonation.
+    # Much more robust on flagged VPS IPs than the transcript API.
     try:
-        return _fetch_subtitles(url, vid, prefer)             # Tier 1b: yt-dlp
+        result = _fetch_subtitles(url, vid, prefer)
+        print("[transcript] Tier 1b (yt-dlp subtitles): success", file=sys.stderr)
+        return result
     except _NoCaptions:
-        pass
+        print("[transcript] Tier 1b: no subtitles available…",
+              file=sys.stderr)
     except Exception as e:
-        # yt-dlp failure (no subs, endpoint blocked, etc.) -> Whisper fallback
-        pass
+        print(f"[transcript] Tier 1b error: {type(e).__name__}: {e}",
+              file=sys.stderr)
 
+    # ── Tier 2: Whisper (audio transcription) ────────────────────────────
+    # Works for any video regardless of caption availability or IP blocking.
     if not allow_whisper:
         return {"title": get_title(vid), "video_id": vid,
                 "url": f"https://www.youtube.com/watch?v={vid}",
                 "error": "NoCaptionsAvailable", "captions": []}
 
+    print("[transcript] Tier 2: falling back to Whisper transcription…", file=sys.stderr)
     try:
-        return _from_whisper(url, vid, translate_to, whisper_model)  # Tier 2
+        return _from_whisper(url, vid, translate_to, whisper_model)
     except Exception as e:
         return {"title": get_title(vid), "video_id": vid,
                 "url": f"https://www.youtube.com/watch?v={vid}",
