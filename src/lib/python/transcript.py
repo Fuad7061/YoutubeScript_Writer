@@ -14,7 +14,15 @@ import os, re, json, html, sys, time, urllib.parse, urllib.request
 from youtube_transcript_api import (
     YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled,
     VideoUnavailable, CouldNotRetrieveTranscript,
+    AgeRestricted, InvalidVideoId, VideoUnplayable,
 )
+
+# Errors that mean "the video itself can't be played" (no point retrying or
+# falling back to Whisper). Everything else that subclasses
+# CouldNotRetrieveTranscript (IpBlocked, RequestBlocked, PoTokenRequired, ...)
+# means the IP/session was blocked, not the video — retry, then fall through
+# to the yt-dlp tiers which use impersonation + cookies + PO tokens.
+_HARD_CAPTION_ERRORS = (VideoUnavailable, AgeRestricted, InvalidVideoId, VideoUnplayable)
 
 # Chrome 150 fingerprint so YouTube sees requests that look like a real
 # browser instead of a server (matters on VPS/datacenter egress IPs).
@@ -118,6 +126,62 @@ def hms(seconds: float) -> str:
 
 # ---------- Tier 1: real captions ----------
 
+def _yt_cookie_header():
+    """Build a `Cookie` header value from the saved Netscape cookies.txt.
+
+    youtube-transcript-api's cookie auth is disabled upstream, so instead of
+    loading the jar we inject the same browser cookies as a Cookie header. This
+    makes the watch-page fetch look like a logged-in browser, which is what
+    gets past "Sign in to confirm you're not a bot" on flagged datacenter IPs.
+    """
+    path = os.environ.get("YOUTUBE_COOKIES_PATH", "/data/youtube-cookies.txt")
+    if not os.path.exists(path):
+        return None
+    pairs = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                domain = parts[0]
+                if "youtube.com" not in domain and "google.com" not in domain:
+                    continue
+                name, value = parts[5], parts[6]
+                if name and value is not None:
+                    pairs.append(f"{name}={value}")
+    except Exception:
+        return None
+    return "; ".join(pairs) if pairs else None
+
+
+def _transcript_api():
+    """A YouTubeTranscriptApi that talks to YouTube like a real browser.
+
+    The stock client uses plain `requests`, which YouTube connection-resets on
+    datacenter IPs (Errno 104) before any content is served. curl_cffi
+    (already in the venv for yt-dlp) impersonates Chrome's TLS fingerprint,
+    and we add the saved browser cookies on top. Falls back to the stock
+    client if curl_cffi or the http_client kwarg isn't available.
+    """
+    try:
+        from curl_cffi.requests import Session as CurlSession
+        sess = CurlSession(impersonate="chrome", timeout=30)
+        sess.headers.update({
+            "accept-language": "en-US,en;q=0.9",
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
+        cookie_header = _yt_cookie_header()
+        if cookie_header:
+            sess.headers["cookie"] = cookie_header
+        return YouTubeTranscriptApi(http_client=sess)
+    except Exception:
+        return YouTubeTranscriptApi()
+
+
 def _pick(tlist, prefer):
     if prefer:
         try:
@@ -135,30 +199,34 @@ def _pick(tlist, prefer):
 def _from_captions(vid, prefer, translate_to, retries=3):
     # youtube-transcript-api can get transiently throttled (429 / IP-based
     # rate limits on datacenter IPs). Retry with backoff before giving up.
+    # Connection resets (Errno 104) and library request errors are NOT wrapped
+    # as CouldNotRetrieveTranscript, so they must be caught explicitly here or
+    # they'd crash the whole script instead of falling through to yt-dlp.
     last_err = None
     tlist = None
     for attempt in range(retries):
         try:
-            tlist = YouTubeTranscriptApi().list(vid)
+            tlist = _transcript_api().list(vid)
             break
         except (NoTranscriptFound, TranscriptsDisabled):
             raise _NoCaptions
+        except _HARD_CAPTION_ERRORS:
+            raise
         except CouldNotRetrieveTranscript as e:
+            # IpBlocked / RequestBlocked / PoTokenRequired / ... -> blocked IP
+            # or token-required video. Retry, then fall through to yt-dlp which
+            # has the PO token provider + cookies.
             last_err = e
-            if attempt < retries - 1:
-                time.sleep(2 * (attempt + 1))
+        except Exception as e:
+            # requests.exceptions.ConnectionError, urllib3 ProtocolError, etc.
+            # — the "connection reset by peer" signature of a flagged IP.
+            last_err = e
+        if attempt < retries - 1:
+            time.sleep(2 * (attempt + 1))
     if tlist is None:
-        # VPS/datacenter egress IPs are usually hard-blocked on this endpoint
-        # while the same call succeeds with a browser TLS fingerprint
-        # (curl_cffi impersonation). Try that once before falling through.
-        try:
-            tlist = YouTubeTranscriptApi(impersonate=True).list(vid)
-        except TypeError:
-            raise last_err          # installed version lacks impersonate support
-        except (NoTranscriptFound, TranscriptsDisabled):
-            raise _NoCaptions
-        except CouldNotRetrieveTranscript as e:
-            raise e
+        print(f"[transcript] Tier 1 (transcript API) failed after {retries} attempts: "
+              f"{type(last_err).__name__}: {last_err}", file=sys.stderr)
+        raise _NoCaptions
     available = [{"code": t.language_code, "name": t.language, "generated": t.is_generated}
                  for t in tlist]
     try:
@@ -373,12 +441,16 @@ def transcript_json(url, prefer=("en",), translate_to=None,
         return _from_captions(vid, prefer, translate_to)      # Tier 1
     except _NoCaptions:
         pass
-    except VideoUnavailable:
+    except _HARD_CAPTION_ERRORS as e:
+        # VideoUnavailable / AgeRestricted / InvalidVideoId / VideoUnplayable —
+        # no point retrying a broken or age-gated video.
         return {"title": get_title(vid), "video_id": vid,
                 "url": f"https://www.youtube.com/watch?v={vid}",
-                "error": "VideoUnavailable", "captions": []}
-    except CouldNotRetrieveTranscript:
-        pass  # IP block etc. -> try yt-dlp subtitles, then Whisper as alternative
+                "error": type(e).__name__, "captions": []}
+    except Exception as e:
+        # Unexpected — never crash the workflow; fall through to yt-dlp tiers.
+        print(f"[transcript] Tier 1 unexpected error: {type(e).__name__}: {e}",
+              file=sys.stderr)
 
     try:
         return _fetch_subtitles(url, vid, prefer)             # Tier 1b: yt-dlp
