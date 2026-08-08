@@ -95,8 +95,23 @@ async function callPlayer(videoId: string): Promise<{
   };
 }> {
   const yt = await getYt();
-  const res = await yt.actions.execute("/player", { videoId, client: "IOS" });
+  const res = await withTimeout(
+    yt.actions.execute("/player", { videoId, client: "IOS" }),
+    12_000,
+    "player",
+  );
   return res.data as never;
+}
+
+/** Reject a promise if it doesn't settle in time (youtubei.js has no per-call timeouts). */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`InnerTube ${what} call timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
 }
 
 /** Fetch title + duration + thumbnail via InnerTube (fast metadata). */
@@ -189,7 +204,7 @@ export async function innertubeCaptions(
 
   try {
     const yt = await getYt();
-    const info = await yt.getInfo(id, { client: "IOS" });
+    const info = await withTimeout(yt.getInfo(id, { client: "IOS" }), 12_000, "getInfo");
     const tracklist = info.captions;
     const tracks = tracklist?.caption_tracks ?? [];
     if (tracks.length === 0) return null;
@@ -206,7 +221,7 @@ export async function innertubeCaptions(
     const best = [...tracks].sort((a, b) => rank(b) - rank(a))[0];
     if (!best?.base_url) return null;
 
-    const res = await fetch(best.base_url);
+    const res = await fetch(best.base_url, { signal: AbortSignal.timeout(12_000) });
     if (!res.ok) return null;
     const raw = await res.text();
 

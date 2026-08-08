@@ -412,7 +412,9 @@ export const resolveMediaUrl = createServerFn({ method: "POST" })
       };
     }
 
-    const exclude = new Set((data.exclude ?? []).map((s) => s.toLowerCase()));
+    const exclude = new Set(
+      (data.exclude ?? []).map((s) => s.toLowerCase().replace(/\+proxy$/, "")),
+    );
     const errors: string[] = [];
 
     // 1. YouTube → resolve+stream in the same worker request via /api/media-proxy.

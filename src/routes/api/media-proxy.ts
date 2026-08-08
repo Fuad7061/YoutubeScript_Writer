@@ -220,12 +220,16 @@ async function resolveInnertube(rawUrl: string, quality: number): Promise<Picked
  */
 const YTDLP_PLAYER_CLIENTS = "tv_embedded,tv,web_embedded,android_vr";
 
+type YtDlpStreamResult =
+  | { ok: true; stream: ReadableStream<Uint8Array>; mime: string }
+  | { ok: false; reason: string };
+
 function ytDlpStream(
   rawUrl: string,
   quality: number,
   track: "video" | "audio",
   signal?: AbortSignal,
-): Promise<{ stream: ReadableStream<Uint8Array>; mime: string } | null> {
+): Promise<YtDlpStreamResult> {
   const mime = track === "audio" ? "audio/mp4" : "video/mp4";
   const format =
     track === "audio"
@@ -256,21 +260,21 @@ function ytDlpStream(
     const writer = writable.getWriter();
     let settled = false;
     let stderrTail = "";
-    const finish = (ok: boolean) => {
+    const finish = (ok: boolean, reason?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (!ok) {
         try { child.kill("SIGKILL"); } catch {}
-        void writer.abort(new Error(`yt-dlp failed: ${stderrTail.slice(-200)}`));
-        resolve(null);
+        void writer.abort(new Error(`yt-dlp failed: ${reason ?? ""}`));
+        resolve({ ok: false, reason: reason ?? (stderrTail.slice(-200) || "no stream output") });
       } else {
-        resolve({ stream: readable, mime });
+        resolve({ ok: true, stream: readable, mime });
       }
     };
     // yt-dlp needs to produce its first byte within 90s or it's stuck
     // (proxy DNS, bot-checked player, etc.).
-    const timer = setTimeout(() => finish(false), 90_000);
+    const timer = setTimeout(() => finish(false, "timeout: no first byte within 90s"), 90_000);
     child.stderr.on("data", (d: Buffer) => {
       stderrTail = (stderrTail + d.toString()).slice(-400);
     });
@@ -280,11 +284,11 @@ function ytDlpStream(
     });
     child.stdout.on("end", () => {
       if (settled) void writer.close();
-      else finish(false);
+      else finish(false, "yt-dlp exited without producing a stream");
     });
     child.stdout.on("error", () => finish(false));
-    child.on("error", () => finish(false));
-    signal?.addEventListener("abort", () => finish(false), { once: true });
+    child.on("error", (e) => finish(false, `spawn error: ${e.message}`));
+    signal?.addEventListener("abort", () => finish(false, "client aborted"), { once: true });
   });
 }
 
@@ -322,8 +326,8 @@ async function proxyResolveYouTube(
   // Final fallback: direct yt-dlp stream from this server's own egress IP.
   try {
     const direct = await ytDlpStream(rawUrl, quality, track, signal);
-    if (!direct) {
-      errs.push("yt-dlp: no stream");
+    if (!direct.ok) {
+      errs.push(`yt-dlp: ${direct.reason}`);
     } else {
       return relayResponse(
         new Response(direct.stream, {
@@ -335,6 +339,9 @@ async function proxyResolveYouTube(
   } catch (e) {
     errs.push(`yt-dlp: ${(e as Error).message}`);
   }
+  // Server-side visibility: the browser only ever sees the status code, so
+  // log the per-resolver failures (visible in docker logs) before replying.
+  console.error(`[media-proxy] resolve+stream failed for ${rawUrl}: ${errs.join(" | ")}`);
   return new Response(`youtube resolve+stream failed: ${errs.join(" | ")}`, { status: 502 });
 }
 
