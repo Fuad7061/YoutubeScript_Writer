@@ -28,6 +28,7 @@ import { Route as ApiMediaProxyRouteImport } from './routes/api/media-proxy'
 import { Route as ApiSessionsRouteImport } from './routes/api/sessions'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
 import { Route as ApiYoutubeCookiesRouteImport } from './routes/api/youtube-cookies'
+import { Route as ApiYoutubeDebugRouteImport } from './routes/api/youtube-debug'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -124,6 +125,11 @@ const ApiYoutubeCookiesRoute = ApiYoutubeCookiesRouteImport.update({
   path: '/api/youtube-cookies',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiYoutubeDebugRoute = ApiYoutubeDebugRouteImport.update({
+  id: '/api/youtube-debug',
+  path: '/api/youtube-debug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -145,6 +151,7 @@ export interface FileRoutesByFullPath {
   '/api/sessions': typeof ApiSessionsRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/api/youtube-cookies': typeof ApiYoutubeCookiesRoute
+  '/api/youtube-debug': typeof ApiYoutubeDebugRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -166,6 +173,7 @@ export interface FileRoutesByTo {
   '/api/sessions': typeof ApiSessionsRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/api/youtube-cookies': typeof ApiYoutubeCookiesRoute
+  '/api/youtube-debug': typeof ApiYoutubeDebugRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -188,6 +196,7 @@ export interface FileRoutesById {
   '/api/sessions': typeof ApiSessionsRoute
   '/api/transcribe': typeof ApiTranscribeRoute
   '/api/youtube-cookies': typeof ApiYoutubeCookiesRoute
+  '/api/youtube-debug': typeof ApiYoutubeDebugRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -211,6 +220,7 @@ export interface FileRouteTypes {
     | '/api/sessions'
     | '/api/transcribe'
     | '/api/youtube-cookies'
+    | '/api/youtube-debug'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -232,6 +242,7 @@ export interface FileRouteTypes {
     | '/api/sessions'
     | '/api/transcribe'
     | '/api/youtube-cookies'
+    | '/api/youtube-debug'
   id:
     | '__root__'
     | '/'
@@ -253,6 +264,7 @@ export interface FileRouteTypes {
     | '/api/sessions'
     | '/api/transcribe'
     | '/api/youtube-cookies'
+    | '/api/youtube-debug'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -275,6 +287,7 @@ export interface RootRouteChildren {
   ApiSessionsRoute: typeof ApiSessionsRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
   ApiYoutubeCookiesRoute: typeof ApiYoutubeCookiesRoute
+  ApiYoutubeDebugRoute: typeof ApiYoutubeDebugRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -412,6 +425,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiYoutubeCookiesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/youtube-debug': {
+      id: '/api/youtube-debug'
+      path: '/api/youtube-debug'
+      fullPath: '/api/youtube-debug'
+      preLoaderRoute: typeof ApiYoutubeDebugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -435,6 +455,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiSessionsRoute: ApiSessionsRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
   ApiYoutubeCookiesRoute: ApiYoutubeCookiesRoute,
+  ApiYoutubeDebugRoute: ApiYoutubeDebugRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
