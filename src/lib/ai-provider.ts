@@ -1,5 +1,77 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { APICallError } from "ai";
+import { APICallError, generateObject } from "ai";
+import type { LanguageModel } from "ai";
+
+/**
+ * Generate an object with retries on empty/transient upstream failures and
+ * schema mismatches. Some OpenAI-compatible proxies occasionally return an
+ * empty body, a transient 5xx, markdown-fenced JSON, or output that misses the
+ * schema; the AI SDK surfaces those as `AI_APICallError` / `NoObjectGeneratedError`
+ * with unhelpful one-liners. We back off briefly and try again (plus the
+ * configured fallback model) before giving up so the caller sees a real,
+ * descriptive error instead of `<none>`.
+ */
+export async function generateObjectWithRetry<T>(
+  label: string,
+  args: any,
+  attempts = 3,
+  timeoutMs = 90_000,
+  fallbackModel?: LanguageModel | null,
+) {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    const attemptLabel = `${label} (attempt ${i + 1}/${attempts})`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error(`${label}: timed out after ${timeoutMs}ms`)), timeoutMs);
+    try {
+      const res = await runAi(attemptLabel, () =>
+        generateObject({ ...args, abortSignal: ctrl.signal }),
+      );
+      if (!res.object) {
+        throw new Error(`${label}: empty response from model`);
+      }
+      return res as unknown as { object: T };
+    } catch (e) {
+      lastErr = e;
+      const msg = (e as Error)?.message || "";
+      const status = APICallError.isInstance(e) ? e.statusCode ?? 0 : 0;
+      const nonRetryable = (e as Error & { nonRetryable?: boolean })?.nonRetryable === true;
+      const retryable =
+        !nonRetryable &&
+        (!status ||
+          status === 408 ||
+          status === 429 ||
+          status >= 500 ||
+          /empty response|invalid json|network|timeout|<none>|fetch failed|aborted|validation|no object generated|did not match schema|could not parse/i.test(msg));
+      console.warn(`[ai] ${attemptLabel} failed:`, msg || e);
+      if (!retryable || i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 800 * (i + 1) + Math.floor(Math.random() * 400)));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // If primary model failed and a fallback model is configured, attempt fallback execution
+  if (fallbackModel) {
+    console.warn(`[ai] ${label}: primary model failed (${(lastErr as Error)?.message}) — switching to fallback model`);
+    const fallbackCtrl = new AbortController();
+    const fallbackTimer = setTimeout(() => fallbackCtrl.abort(new Error(`${label}: fallback timed out after ${timeoutMs}ms`)), timeoutMs);
+    try {
+      const res = await runAi(`${label} (fallback)`, () =>
+        generateObject({ ...args, model: fallbackModel, abortSignal: fallbackCtrl.signal }),
+      );
+      if (res.object) {
+        return res;
+      }
+    } catch (fbErr) {
+      console.error(`[ai] ${label}: fallback model also failed:`, fbErr);
+    } finally {
+      clearTimeout(fallbackTimer);
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(`${label}: unknown error`);
+}
 
 /**
  * Wrap an AI SDK call so cryptic provider errors (like "Invalid JSON response"
@@ -134,7 +206,12 @@ const sseTolerantFetch: typeof fetch = async (input, init) => {
   } catch {
     /* ignore */
   }
-  if (wantsStream || !ct.includes("text/event-stream")) return res;
+  if (wantsStream || !ct.includes("text/event-stream")) {
+    if (!wantsStream && ct.includes("application/json")) {
+      return sanitizeJsonBody(res);
+    }
+    return res;
+  }
 
   const text = await res.text();
   const merged = mergeSseToChatCompletion(text);
@@ -144,6 +221,41 @@ const sseTolerantFetch: typeof fetch = async (input, init) => {
     headers: { "content-type": "application/json" },
   });
 };
+
+/**
+ * Markdown code fences break the AI SDK's JSON.parse when a model wraps its
+ * answer in ```json ... ``` (gateways that ignore `response_format` let the
+ * model free-form the reply). Strip the fence so the SDK sees clean JSON.
+ * Only unwraps when the ENTIRE text is one fenced block — plain prose passes
+ * through untouched.
+ */
+function unwrapFencedJson(text: string): string {
+  const trimmed = text.trim();
+  const m = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```\s*$/);
+  return m ? m[1].trim() : text;
+}
+
+/** Sanitize a non-streaming application/json completion body in place. */
+async function sanitizeJsonBody(res: Response): Promise<Response> {
+  try {
+    const text = await res.text();
+    const parsed = JSON.parse(text);
+    const msg = parsed?.choices?.[0]?.message;
+    if (
+      msg &&
+      typeof msg.content === "string" &&
+      msg.content.trim().startsWith("```")
+    ) {
+      msg.content = unwrapFencedJson(msg.content);
+    }
+    return new Response(JSON.stringify(parsed), {
+      status: res.status,
+      headers: { "content-type": "application/json" },
+    });
+  } catch {
+    return res;
+  }
+}
 
 function mergeSseToChatCompletion(sse: string): Record<string, unknown> | null {
   const events: Array<Record<string, unknown>> = [];
@@ -223,7 +335,10 @@ function mergeSseToChatCompletion(sse: string): Record<string, unknown> | null {
     }
   }
 
-  const message: Record<string, unknown> = { role, content: finalContent || null };
+  const message: Record<string, unknown> = {
+    role,
+    content: finalContent ? unwrapFencedJson(finalContent) : null,
+  };
   if (reasoning) (message as { reasoning_content?: string }).reasoning_content = reasoning;
 
   const tcArr = Object.keys(toolCalls)

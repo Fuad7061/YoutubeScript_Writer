@@ -1,8 +1,14 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateText, generateObject } from "ai";
+import { generateText } from "ai";
 import { z } from "zod";
 import { renderPrompt } from "./prompt-registry";
-import { resolveModel, runAi, type StageOverride } from "./ai-provider";
+import {
+  resolveModel,
+  runAi,
+  generateObjectWithRetry,
+  resolveFallbackModel,
+  type StageOverride,
+} from "./ai-provider";
 
 /**
  * Commentary-mode script generator.
@@ -943,7 +949,7 @@ OUTPUT FORMAT (EXACT — 4 columns, do not add or rename)
 
 REMINDER (last line, do not ignore): all 5 required headers (🔥 Viral Title, 📝 Meta Description, 🎬 The Script, 🎵 Music Tip, 🔄 Loop Check) must appear. Hook tag must match <HOOK> word-for-word. Joke vocabulary must come from <ANGLE>'s metaphor system. Every SOURCE CLIP timestamp must fall inside the source duration. Every 📱 Editor (CapCut) cell must fill all 7 sub-fields ([CUT] · [EFFECT] · [TRANSITION] · [SPEED] · [KEYFRAME] · [TEXT PRESET] · [AUDIO]) and execute what the Visuals column describes. Loop line must pass the read-aloud test.`;
 
-function autoLengthFromSource(durationSec?: number): number {
+export function autoLengthFromSource(durationSec?: number): number {
   // Mirror the original source length 1:1 so the commentary matches the clip
   // the user actually uploaded. Falls back to 30s only when the duration is
   // unknown / invalid.
@@ -1239,88 +1245,128 @@ SOURCE BRIEF
 Reply with ONLY a JSON object, no prose, no markdown fences:
 {"angle":"…","tone":"… [REGISTER: …]","hookArchetype":"…","lengthTargetSec":{{DERIVED_LENGTH}},"visualFormat":"…","briefAddendum":"BEAT_MAP:\\n  1. SETUP: …\\n  2. IMPACT: …\\n  3. RESPONSE: …\\n  4. RESOLUTION: …\\n  PAYOFF ROW: …\\nSYMPATHETIC PARTY: …\\nVILLAIN / TARGET: …\\nVIRAL PAYOFF MOMENT: …\\nTARGET FEELING: …\\nMUST-KEEP DETAILS: …\\nMUST-AVOID: …\\nVIEWER_CONNECTION_HOOK: …\\nSUGGESTED_TECHNIQUE: …","reasoning":"1–2 sentences naming which draft beat / brief detail drove each choice"}`;
 
-export const deriveMirrorKnobs = createServerFn({ method: "POST" })
-  .inputValidator((i: unknown) => MirrorInput.parse(i))
-  .handler(async ({ data }): Promise<MirrorKnobs> => {
-    const model = resolveModel(data.override as StageOverride | undefined);
-    const briefBase =
-      data.brief?.trim() ||
-      (data.analysis
-        ? assembleBrief({ meta: data.meta, analysis: data.analysis, transcript: data.transcript })
-        : "");
-    const corrections = data.userCorrections?.trim() ?? "";
-    const brief = corrections
-      ? `=== USER CORRECTIONS (HIGHEST PRIORITY — OVERRIDES SUMMARY / SCENES / DRAFT ON ANY CONFLICT. Treat each sentence as verified fact. If a brief line contradicts a correction, silently rewrite the derived knobs so they agree with the correction.) ===\n${corrections.slice(0, 4000)}\n\n${briefBase}`
-      : briefBase;
-    const draft = data.videoDraft?.trim() ?? "";
-    const srcDur = data.meta?.duration;
-    const derived = autoLengthFromSource(srcDur);
+/**
+ * Clamp + snap raw model output into a usable MirrorKnobs value.
+ * Shared by the standalone derive endpoint AND the report-merge bundle so both
+ * paths produce identical, validated knobs.
+ */
+export function normalizeMirrorKnobs(raw: Record<string, unknown>, derivedLen: number): MirrorKnobs {
+  const s = (v: unknown): string =>
+    typeof v === "string" ? v : v == null ? "" : JSON.stringify(v);
+  const len = Number(raw.lengthTargetSec);
+  const knobs: MirrorKnobs = {
+    angle: s(raw.angle).trim(),
+    tone: s(raw.tone).trim(),
+    hookArchetype: s(raw.hookArchetype).trim().replace(/\s+/g, " "),
+    lengthTargetSec: isFinite(len) ? len : derivedLen,
+    visualFormat: s(raw.visualFormat).trim(),
+    briefAddendum: s(raw.briefAddendum).trim(),
+    reasoning: s(raw.reasoning).trim(),
+  };
+  // Belt-and-suspenders: clamp to the supported window so a stray model
+  // response can't crash the pipeline.
+  knobs.lengthTargetSec = Math.max(3, Math.min(180, Math.round(knobs.lengthTargetSec)));
 
-    const tpl =
-      data.promptTemplate && data.promptTemplate.trim().length > 0
-        ? data.promptTemplate
-        : DEFAULT_MIRROR_DERIVE_TEMPLATE;
+  // Snap visualFormat to a known preset when close, otherwise pass through.
+  const VF_PRESETS = [
+    "Voice-over only (no creator on camera)",
+    "Green screen (creator keyed over the clip)",
+    "Picture-in-Picture reaction (creator in a corner bubble)",
+    "Split-screen / Duet (creator side-by-side with the clip)",
+    "Talking-head cutaways (creator cuts in between clip beats)",
+  ];
+  const exact = VF_PRESETS.find((p) => p === knobs.visualFormat);
+  if (!exact) {
+    const lc = knobs.visualFormat.toLowerCase();
+    const fuzzy = VF_PRESETS.find((p) => lc.includes(p.split(" ")[0].toLowerCase()));
+    if (fuzzy) knobs.visualFormat = fuzzy;
+  }
+  return knobs;
+}
 
-    const draftModeNote = draft
-      ? "Use the DRAFT below as your primary source of truth (it was written by a model that watched the actual video)."
-      : "NO draft is attached — fall back to SUMMARY + SCENES + on-screen text in the brief.";
-    const draftBlock = draft
-      ? `===========================================\nDRAFT SCRIPT (Gemini watched the video — PRIMARY source of truth)\n===========================================\n${draft.slice(0, 6000)}\n`
-      : "";
+/**
+ * Render the full mirror-derive prompt (used by both the standalone derive
+ * endpoint and the report-merge bundle).
+ */
+export function buildMirrorPrompt(data: z.infer<typeof MirrorInput>): string {
+  const briefBase =
+    data.brief?.trim() ||
+    (data.analysis
+      ? assembleBrief({ meta: data.meta, analysis: data.analysis, transcript: data.transcript })
+      : "");
+  const corrections = data.userCorrections?.trim() ?? "";
+  const brief = corrections
+    ? `=== USER CORRECTIONS (HIGHEST PRIORITY — OVERRIDES SUMMARY / SCENES / DRAFT ON ANY CONFLICT. Treat each sentence as verified fact. If a brief line contradicts a correction, silently rewrite the derived knobs so they agree with the correction.) ===\n${corrections.slice(0, 4000)}\n\n${briefBase}`
+    : briefBase;
+  const draft = data.videoDraft?.trim() ?? "";
+  const srcDur = data.meta?.duration;
+  const derived = autoLengthFromSource(srcDur);
 
-    const prompt = tpl.replace(/\{\{([A-Za-z_]+)\}\}/g, (m, key: string) => {
-      const subs: Record<string, string> = {
-        "{{DRAFT_MODE_NOTE}}": draftModeNote,
-        "{{DERIVED_LENGTH}}": String(derived),
-        "{{BRIEF}}": brief || "(none)",
-        "{{DRAFT_BLOCK}}": draftBlock,
-      };
-      const normalized = `{{${key.toUpperCase()}}}`;
-      return subs[normalized] ?? m;
-    });
+  const tpl =
+    data.promptTemplate && data.promptTemplate.trim().length > 0
+      ? data.promptTemplate
+      : DEFAULT_MIRROR_DERIVE_TEMPLATE;
 
-    const Shape = z.object({
-      angle: z.string().min(4),
-      tone: z.string().min(4),
-      // Free-form: the deriver coins a topic-specific label from the source.
-      // Trim + collapse whitespace before validating.
-      hookArchetype: z
-        .string()
-        .transform((s) => s.trim().replace(/\s+/g, " "))
-        .pipe(z.string().min(2).max(60)),
-      lengthTargetSec: z.number().min(3).max(180),
-      visualFormat: z.string().min(4),
-      briefAddendum: z.string().min(10),
-      reasoning: z.string().min(4),
-    });
+  const draftModeNote = draft
+    ? "Use the DRAFT below as your primary source of truth (it was written by a model that watched the actual video)."
+    : "NO draft is attached — fall back to SUMMARY + SCENES + on-screen text in the brief.";
+  const draftBlock = draft
+    ? `===========================================\nDRAFT SCRIPT (Gemini watched the video — PRIMARY source of truth)\n===========================================\n${draft.slice(0, 6000)}\n`
+    : "";
 
-    const { object: out } = await runAi("Video draft (text fallback)", () => generateObject({
+  return tpl.replace(/\{\{([A-Za-z_]+)\}\}/g, (m, key: string) => {
+    const subs: Record<string, string> = {
+      "{{DRAFT_MODE_NOTE}}": draftModeNote,
+      "{{DERIVED_LENGTH}}": String(derived),
+      "{{BRIEF}}": brief || "(none)",
+      "{{DRAFT_BLOCK}}": draftBlock,
+    };
+    const normalized = `{{${key.toUpperCase()}}}`;
+    return subs[normalized] ?? m;
+  });
+}
+
+/** Core derivation logic — shared by the standalone endpoint and the report bundle. */
+export async function deriveMirrorKnobsCore(data: z.infer<typeof MirrorInput>): Promise<MirrorKnobs> {
+  const model = resolveModel(data.override as StageOverride | undefined);
+  const fallbackModel = resolveFallbackModel(data.override as StageOverride | undefined);
+  const derived = autoLengthFromSource(data.meta?.duration);
+  const prompt = buildMirrorPrompt(data);
+
+  const Shape = z.object({
+    angle: z.string().catch(""),
+    tone: z.string().catch(""),
+    hookArchetype: z.string().catch(""),
+    lengthTargetSec: z.coerce.number().catch(derived),
+    visualFormat: z.string().catch(""),
+    briefAddendum: z.string().catch(""),
+    reasoning: z.string().catch(""),
+  });
+
+  const res = await generateObjectWithRetry<Record<string, unknown>>(
+    "mirror knobs derive",
+    {
       model,
       temperature: 0.4,
       maxOutputTokens: 16384,
       schema: Shape,
-      prompt
-    }));
-    // Belt-and-suspenders: clamp to the supported window so a stray model
-    // response can't crash the pipeline.
-    out.lengthTargetSec = Math.max(3, Math.min(180, Math.round(out.lengthTargetSec)));
+      prompt,
+    },
+    3,
+    90_000,
+    fallbackModel,
+  );
+  const out = (res.object ?? {}) as Record<string, unknown>;
+  const knobs = normalizeMirrorKnobs(out, derived);
+  if (!knobs.angle || !knobs.tone) {
+    throw new Error("mirror derivation returned an empty angle/tone — try again");
+  }
+  return knobs;
+}
 
-    // Snap visualFormat to a known preset when close, otherwise pass through.
-    const VF_PRESETS = [
-      "Voice-over only (no creator on camera)",
-      "Green screen (creator keyed over the clip)",
-      "Picture-in-Picture reaction (creator in a corner bubble)",
-      "Split-screen / Duet (creator side-by-side with the clip)",
-      "Talking-head cutaways (creator cuts in between clip beats)",
-    ];
-    const exact = VF_PRESETS.find((p) => p === out.visualFormat);
-    if (!exact) {
-      const lc = out.visualFormat.toLowerCase();
-      const fuzzy = VF_PRESETS.find((p) => lc.includes(p.split(" ")[0].toLowerCase()));
-      if (fuzzy) out.visualFormat = fuzzy;
-    }
-    return out;
-  });
+export const deriveMirrorKnobs = createServerFn({ method: "POST" })
+  .inputValidator((i: unknown) => MirrorInput.parse(i))
+  .handler(async ({ data }): Promise<MirrorKnobs> => deriveMirrorKnobsCore(data));
 
 
 // Uses Gemini's YouTube-URI understanding via native API — the OpenAI-compatible

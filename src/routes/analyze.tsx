@@ -568,7 +568,7 @@ function AnalyzePage() {
         log("assembling final report (summary, scenes, angles)…");
         if (getGlobalSignal().aborted) throw new Error("Aborted by user");
 
-        const report = await mergeAnalysis({
+        const merged = await mergeAnalysis({
           data: {
             meta,
             frameCaptions: allCaptions,
@@ -576,19 +576,20 @@ function AnalyzePage() {
             transcript,
             videoDraft,
             promptTemplate: cfg.promptOverrides["analyze.reportMerge"],
+            mirrorPromptTemplate: cfg.promptOverrides["analyze.mirrorDerive"],
             userCorrections: project.userCorrections,
             override: overrideMerge,
           },
         });
 
-
         setProject({
-          analysis: report,
+          analysis: merged.report,
           analysisTranscript: transcript || undefined,
+          mirrorKnobs: merged.mirrorKnobs,
         });
         setPhase("done");
         setProgress(null);
-        log(`✓ analysis complete in ${((Date.now() - (startedAtRef.current ?? Date.now())) / 1000).toFixed(1)}s`, "ok");
+        log(`✓ analysis complete in ${((Date.now() - (startedAtRef.current ?? Date.now())) / 1000).toFixed(1)}s${merged.mirrorKnobs ? " · mirror knobs bundled" : ""}`, "ok");
       } catch (e: any) {
         if (e.message === "Aborted by user") {
           log("Analysis stopped.", "warn");
@@ -623,7 +624,7 @@ function AnalyzePage() {
 
       if (getGlobalSignal().aborted) throw new Error("Aborted by user");
 
-      const report = await mergeAnalysis({
+      const merged = await mergeAnalysis({
         data: {
           meta,
           frameCaptions: cachedCaptions,
@@ -631,14 +632,15 @@ function AnalyzePage() {
           transcript: project.analysisTranscript ?? "",
           videoDraft: project.videoDraft,
           promptTemplate: cfg.promptOverrides["analyze.reportMerge"],
+          mirrorPromptTemplate: cfg.promptOverrides["analyze.mirrorDerive"],
           userCorrections: project.userCorrections,
           override: overrideMerge,
         },
       });
 
-      setProject({ analysis: report, mirrorKnobs: undefined });
+      setProject({ analysis: merged.report, mirrorKnobs: merged.mirrorKnobs });
       autoMirrorRef.current = false;
-      log("✓ report regenerated", "ok");
+      log(`✓ report regenerated${merged.mirrorKnobs ? " + mirror knobs" : ""}`, "ok");
       toast.success("report regenerated");
     } catch (e: any) {
       if (e.message === "Aborted by user") {
@@ -740,8 +742,8 @@ function AnalyzePage() {
     try {
       const overrideMerge = getStageOverride(cfg, "analyze-report");
       const meta = project.analysisSource ?? {};
-      log("↻ regenerating report from cached captions (no vision cost)…", "info");
-      const report = await mergeAnalysis({
+      log("↻ regenerating report + mirror knobs from cached captions (no vision cost)…", "info");
+      const merged = await mergeAnalysis({
         data: {
           meta,
           frameCaptions: cachedCaptions,
@@ -749,13 +751,14 @@ function AnalyzePage() {
           transcript: project.analysisTranscript ?? "",
           videoDraft: project.videoDraft,
           promptTemplate: cfg.promptOverrides["analyze.reportMerge"],
+          mirrorPromptTemplate: cfg.promptOverrides["analyze.mirrorDerive"],
           userCorrections: project.userCorrections,
           override: overrideMerge,
         },
       });
-      setProject({ analysis: report, mirrorKnobs: undefined });
-      autoMirrorRef.current = false; // let auto-mirror re-derive against the fresh report
-      log("✓ report regenerated", "ok");
+      setProject({ analysis: merged.report, mirrorKnobs: merged.mirrorKnobs });
+      autoMirrorRef.current = false; // let auto-mirror fall back only if the bundle missed
+      log(`✓ report regenerated${merged.mirrorKnobs ? " + mirror knobs" : ""}`, "ok");
       toast.success("report regenerated");
     } catch (e) {
       const msg = (e as Error).message || "regenerate failed";

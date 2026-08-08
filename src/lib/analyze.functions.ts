@@ -1,79 +1,32 @@
 import { createServerFn } from "@tanstack/react-start";
-import { generateObject, APICallError } from "ai";
 import { z } from "zod";
-import { resolveModel, resolveFallbackModel, runAi, type StageOverride } from "./ai-provider";
-import type { LanguageModel } from "ai";
+import { resolveModel, resolveFallbackModel, generateObjectWithRetry, type StageOverride } from "./ai-provider";
+import {
+  buildMirrorPrompt,
+  deriveMirrorKnobsCore,
+  normalizeMirrorKnobs,
+  autoLengthFromSource,
+  DEFAULT_MIRROR_DERIVE_TEMPLATE,
+  type MirrorKnobs,
+} from "./commentary-script.functions";
 
 /**
- * Generate text with retries on empty/transient upstream failures.
- * Some OpenAI-compatible proxies occasionally return an empty body or a
- * transient 5xx; the AI SDK surfaces those as `AI_APICallError` with an
- * empty message. We back off briefly and try again before giving up so
- * the caller sees a real, descriptive error instead of `<none>`.
+ * Tolerant zod primitives for model-generated output.
+ * Models routinely emit strings for numeric fields ("12.5"), `null` for
+ * optional strings, or skip fields entirely. A strict schema turns any of
+ * those into a hard failure (AI SDK throws "No object generated: response
+ * did not match schema"), which kills the whole report even though the model
+ * produced valid content. These wrappers coerce instead of rejecting.
  */
-async function generateObjectWithRetry<T>(
-  label: string,
-  args: any,
-  attempts = 3,
-  timeoutMs = 90_000,
-  fallbackModel?: LanguageModel | null,
-) {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    const attemptLabel = `${label} (attempt ${i + 1}/${attempts})`;
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(new Error(`${label}: timed out after ${timeoutMs}ms`)), timeoutMs);
-    try {
-      const res = await runAi(attemptLabel, () =>
-        generateObject({ ...args, abortSignal: ctrl.signal }),
-      );
-      if (!res.object) {
-        throw new Error(`${label}: empty response from model`);
-      }
-      return res as unknown as { object: T };
-    } catch (e) {
-      lastErr = e;
-      const msg = (e as Error)?.message || "";
-      const status = APICallError.isInstance(e) ? e.statusCode ?? 0 : 0;
-      const nonRetryable = (e as Error & { nonRetryable?: boolean })?.nonRetryable === true;
-      const retryable =
-        !nonRetryable &&
-        (!status ||
-          status === 408 ||
-          status === 429 ||
-          status >= 500 ||
-          /empty response|invalid json|network|timeout|<none>|fetch failed|aborted|validation/i.test(msg));
-      console.warn(`[analyze] ${attemptLabel} failed:`, msg || e);
-      if (!retryable || i === attempts - 1) break;
-      await new Promise((r) => setTimeout(r, 800 * (i + 1) + Math.floor(Math.random() * 400)));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  // If primary model failed and a fallback model is configured, attempt fallback execution
-  if (fallbackModel) {
-    console.warn(`[analyze] ${label}: primary model failed (${(lastErr as Error)?.message}) — switching to fallback model`);
-    const fallbackCtrl = new AbortController();
-    const fallbackTimer = setTimeout(() => fallbackCtrl.abort(new Error(`${label}: fallback timed out after ${timeoutMs}ms`)), timeoutMs);
-    try {
-      const res = await runAi(`${label} (fallback)`, () =>
-        generateObject({ ...args, model: fallbackModel, abortSignal: fallbackCtrl.signal }),
-      );
-      if (res.object) {
-        return res;
-      }
-    } catch (fbErr) {
-      console.error(`[analyze] ${label}: fallback model also failed:`, fbErr);
-    } finally {
-      clearTimeout(fallbackTimer);
-    }
-  }
-
-  throw lastErr instanceof Error ? lastErr : new Error(`${label}: unknown error`);
-}
-
-
+const num = z.coerce.number().catch(0);
+const str = z.preprocess(
+  (v) => (typeof v === "string" ? v : v == null ? "" : JSON.stringify(v)),
+  z.string(),
+);
+const optStr = z.preprocess(
+  (v) => (typeof v === "string" ? v : undefined),
+  z.string().optional(),
+);
 
 /**
  * Vision + text merge pipeline used by the /analyze page.
@@ -109,8 +62,8 @@ export type FrameBatchResult = {
 };
 
 const FrameBatchSchema = z.object({
-  frames: z.array(z.object({ t: z.number(), visual: z.string(), onScreenText: z.string().optional() })),
-  batchSummary: z.string()
+  frames: z.array(z.object({ t: num, visual: str, onScreenText: optStr })).catch([]),
+  batchSummary: str
 });
 
 /**
@@ -236,6 +189,8 @@ const MergeInput = z.object({
   videoDraft: z.string().optional(),
   /** Optional custom prompt template (from Prompt Registry). */
   promptTemplate: z.string().optional(),
+  /** Optional custom mirror-derive prompt template (from Prompt Registry). */
+  mirrorPromptTemplate: z.string().optional(),
   /** User-authored corrections — highest-priority evidence, overrides everything else. */
   userCorrections: z.string().optional(),
   override: z.any().optional(),
@@ -244,7 +199,7 @@ const MergeInput = z.object({
 
 export type AnalysisReport = {
   summary: string;
-  hookMoments: { t: number; description: string; role?: "sympathetic" | "villain" | "hero" | "neutral" | "opening" | "attack" | "hero_save" | "payoff" | "cta" }[];
+  hookMoments: { t: number; description: string; role?: string }[];
   scenes: {
     start: number;
     end: number;
@@ -336,7 +291,7 @@ ACTOR-REFERENCE & PRONOUN RULE (applies to summary, every scenes[].visual / keyT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Return STRICT JSON matching this exact shape (no extra fields, no prose, no markdown):
+Return STRICT JSON matching this exact shape (no prose, no markdown — plus the REQUIRED "mirror" property defined in the MIRROR KNOBS section at the end of this prompt):
 {
   "summary": "3-5 sentence plain-English description of what happens in the video, start to finish. Refer to actors using the ACTOR-REFERENCE & PRONOUN RULE above. Name actors the same way the Draft names them (species / type + distinguishing visual). If the Draft says a dog performs the rescue, the summary says a dog performs the rescue.",
   "hookMoments": [{"t": <seconds>, "description": "...", "role": "opening|pivot|payoff|cta"}],
@@ -365,10 +320,17 @@ Rules:
 
 
 
+export type MergeAnalysisResult = {
+  report: AnalysisReport;
+  /** Derived in the same generation when the model complies; falls back to a second derive call otherwise. */
+  mirrorKnobs?: MirrorKnobs;
+};
+
 export const mergeAnalysis = createServerFn({ method: "POST" })
   .inputValidator((i: unknown) => MergeInput.parse(i))
-  .handler(async ({ data }): Promise<AnalysisReport> => {
+  .handler(async ({ data }): Promise<MergeAnalysisResult> => {
     const model = resolveModel(data.override as StageOverride | undefined);
+    const fallbackModel = resolveFallbackModel(data.override as StageOverride | undefined);
 
     const framesBlock = data.frameCaptions
       .map((f) => `[${f.t.toFixed(1)}s] ${f.visual}${f.onScreenText ? ` — on-screen: "${f.onScreenText}"` : ""}`)
@@ -400,39 +362,81 @@ export const mergeAnalysis = createServerFn({ method: "POST" })
       "{{USER_CORRECTIONS}}": correctionsText ? correctionsText.slice(0, 4000) : "(none)",
     });
 
+    const derivedLen = autoLengthFromSource(data.meta?.duration);
+
+    // Bundle the mirror-derive step into the SAME model call (and so the same
+    // gateway request): the report is the brief, so asking one model to emit
+    // both halves avoids a second paid request. The mirror template's own
+    // final "Reply with ONLY a JSON object..." line is stripped — the mirror
+    // fields are appended to the report's JSON object instead.
+    const mirrorTpl = data.mirrorPromptTemplate?.trim() || DEFAULT_MIRROR_DERIVE_TEMPLATE;
+    const mirrorBody = mirrorTpl.split("Reply with ONLY a JSON object")[0].trim();
+    const mirrorSection = mirrorBody
+      ? `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MIRROR KNOBS — EXTRA OUTPUT (part of the SAME JSON object, required)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${buildMirrorPrompt({
+  meta: data.meta,
+  brief: "(The REPORT object you just produced above IS the brief — derive the mirror knobs from it. Do not summarize it back.)",
+  transcript: data.transcript,
+  videoDraft: data.videoDraft,
+  promptTemplate: mirrorBody,
+  userCorrections: data.userCorrections,
+})}
+Your single JSON object must therefore be the report shape from the OUTPUT section above PLUS a "mirror" property:
+{"mirror":{"angle":"…","tone":"… [REGISTER: …]","hookArchetype":"…","lengthTargetSec":${derivedLen},"visualFormat":"…","briefAddendum":"…","reasoning":"…"}}`
+      : "";
+
     const MergeAnalysisSchema = z.object({
-      summary: z.string(),
-      hookMoments: z.array(z.object({ t: z.number(), description: z.string(), role: z.enum(["sympathetic", "villain", "hero", "neutral", "opening", "attack", "hero_save", "payoff", "cta"]).optional() })),
+      summary: str,
+      hookMoments: z.array(z.object({ t: num, description: str, role: optStr })).catch([]),
       scenes: z.array(z.object({
-        start: z.number(),
-        end: z.number(),
-        visual: z.string(),
-        spoken: z.string().optional(),
-        onScreenText: z.string().optional(),
-        keyTakeaway: z.string(),
-        beatType: z.string().optional()
-      })),
-      topics: z.array(z.string()),
-      entities: z.array(z.string()),
-      tone: z.string(),
-      pacing: z.string(),
-      targetAudience: z.string(),
-      clipType: z.string().optional(),
+        start: num,
+        end: num,
+        visual: str,
+        spoken: optStr,
+        onScreenText: optStr,
+        keyTakeaway: str,
+        beatType: optStr
+      })).catch([]),
+      topics: z.array(str).catch([]),
+      entities: z.array(str).catch([]),
+      tone: str,
+      pacing: str,
+      targetAudience: str,
+      clipType: optStr,
       emotionalAnchor: z.object({
-        focalDetail: z.string(),
-        pivotAction: z.string(),
-        contrastMoment: z.string()
-      }).optional(),
-      commentaryAngles: z.array(z.string()).optional()
+        focalDetail: str,
+        pivotAction: str,
+        contrastMoment: str
+      }).catch({ focalDetail: "", pivotAction: "", contrastMoment: "" }).optional(),
+      commentaryAngles: z.array(str).catch([]).optional(),
+      mirror: z.object({
+        angle: str,
+        tone: str,
+        hookArchetype: str,
+        lengthTargetSec: num,
+        visualFormat: str,
+        briefAddendum: str,
+        reasoning: str
+      }).catch({ angle: "", tone: "", hookArchetype: "", lengthTargetSec: 0, visualFormat: "", briefAddendum: "", reasoning: "" }).optional(),
     });
 
-    const res = await generateObjectWithRetry("final report merge", { 
-      model, 
-      temperature: 0.3, 
-      maxOutputTokens: 16384, 
-      schema: MergeAnalysisSchema,
-      prompt: promptText 
-    });
+    const res = await generateObjectWithRetry(
+      "final report merge",
+      {
+        model,
+        temperature: 0.3,
+        maxOutputTokens: 16384,
+        schema: MergeAnalysisSchema,
+        prompt: promptText + mirrorSection,
+      },
+      3,
+      90_000,
+      fallbackModel,
+    );
     const parsed = (res.object ?? {}) as any;
 
 
@@ -454,12 +458,38 @@ export const mergeAnalysis = createServerFn({ method: "POST" })
           contrastMoment: pick("contrastMoment"),
         };
       }
-      return {
+      const report: AnalysisReport = {
         ...parsed,
         emotionalAnchor,
         commentaryAngles: normalizeAngles((parsed as { commentaryAngles?: unknown }).commentaryAngles ?? []),
         transcriptExcerpt: data.transcript ? data.transcript.slice(0, 2000) : undefined,
       };
+
+      // Mirror knobs, bundled into the same generation. If the model skipped
+      // the "mirror" property, fall back to a single standalone derive call so
+      // the user never has to click "derive" by hand.
+      let mirrorKnobs: MirrorKnobs | undefined;
+      const rawMirror = (parsed as { mirror?: unknown }).mirror;
+      if (rawMirror && typeof rawMirror === "object") {
+        const knobs = normalizeMirrorKnobs(rawMirror as Record<string, unknown>, derivedLen);
+        if (knobs.angle && knobs.tone) mirrorKnobs = knobs;
+      }
+      if (!mirrorKnobs) {
+        try {
+          mirrorKnobs = await deriveMirrorKnobsCore({
+            meta: data.meta,
+            analysis: report,
+            transcript: data.transcript,
+            videoDraft: data.videoDraft,
+            promptTemplate: mirrorTpl,
+            userCorrections: data.userCorrections,
+            override: data.override,
+          });
+        } catch (e) {
+          console.warn("[analyze] bundled mirror derive failed, continuing without it:", (e as Error).message);
+        }
+      }
+      return { report, mirrorKnobs };
     } catch (e) {
       throw new Error(`analysis merge failed to parse model output: ${(e as Error).message}`);
     }

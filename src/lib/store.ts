@@ -247,7 +247,7 @@ const defaultConfig: Config = {
   promptBaselines: {},
   activePrompts: {},
   customModels: [],
-  transcribeAudio: false,
+  transcribeAudio: true,
   commentaryDefaultMode: "mirror",
   analyzeVisionFps: "auto",
   analyzeMaxFrames: 12,

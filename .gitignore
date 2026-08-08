@@ -5,3 +5,7 @@ data
 fast-whisper-env
 .env
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
