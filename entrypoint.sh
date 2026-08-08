@@ -12,10 +12,10 @@ if [ -f /opt/bgutil/build/main.js ]; then
   node /opt/bgutil/build/main.js &
   PROVIDER_PID=$!
   i=0
-  # The provider's "/" route returns HTTP 400 by design when it is alive,
-  # so any response (including 400) means the server is up.
+  # The provider's /ping route returns 200 JSON when it is alive (it exists
+  # in every version, unlike "/" which older builds don't have).
   while [ "$i" -lt 120 ]; do
-    if node -e "fetch('http://127.0.0.1:4416/').then(r => process.exit(r.status === 400 ? 0 : 1)).catch(() => process.exit(1))" >/dev/null 2>&1; then
+    if node -e "fetch('http://127.0.0.1:4416/ping').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" >/dev/null 2>&1; then
       echo "[entrypoint] PO token provider ready on 127.0.0.1:4416 (pid $PROVIDER_PID)"
       break
     fi
