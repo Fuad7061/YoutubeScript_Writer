@@ -3,10 +3,11 @@ import { AppShell } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-import { useConfig, applyOverrideToAllStages } from "@/lib/store";
+import { useConfig, applyOverrideToAllStages, getFormattedProxyUrl } from "@/lib/store";
 import { searchAmazon } from "@/lib/amazon.functions";
+import { testProxyConnection } from "@/lib/proxy.functions";
 import { toast } from "sonner";
-import { Plus, Trash2, Zap, Database, HardDriveDownload } from "lucide-react";
+import { Plus, Trash2, Zap, Database, HardDriveDownload, ShieldCheck } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -167,32 +168,7 @@ function SettingsPage() {
           <CookiesPanel />
         </section>
 
-        <section className="rounded-lg border border-border bg-card p-6">
-          <h3 className="mb-1 text-lg font-semibold">YouTube Proxy Server</h3>
-          <p className="mb-4 text-xs text-muted-foreground">
-            Optional HTTP, HTTPS, or SOCKS5 proxy URL to route YouTube caption and audio requests through on VPS / datacenter servers to bypass IP bans.
-            See{" "}
-            <a
-              href="https://github.com/jdepoix/youtube-transcript-api?tab=readme-ov-file#working-around-ip-bans-requestblocked-or-ipblocked-exception"
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-primary hover:underline"
-            >
-              youtube-transcript-api IP ban guide ↗
-            </a>
-          </p>
-          <div className="max-w-xl space-y-2">
-            <Input
-              value={cfg.youtubeProxy ?? ""}
-              onChange={(e) => setCfg({ youtubeProxy: e.target.value })}
-              placeholder="http://user:pass@proxy.example.com:8080 or socks5://1.2.3.4:1080"
-              className="font-mono text-xs"
-            />
-            <p className="font-mono text-[11px] text-muted-foreground">
-              Formants: <code>http://user:pass@host:port</code>, <code>http://host:port</code>, <code>socks5://host:port</code>
-            </p>
-          </div>
-        </section>
+        <ProxySettingsPanel />
 
         <section className="rounded-lg border border-border bg-card p-6">
           <h3 className="mb-1 text-lg font-semibold">Gemini TTS · API keys</h3>
@@ -613,5 +589,108 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <label className="mb-1 block font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{label}</label>
       {children}
     </div>
+  );
+}
+
+function ProxySettingsPanel() {
+  const [cfg, setCfg] = useConfig();
+  const [testing, setTesting] = useState(false);
+
+  const formattedUrl = getFormattedProxyUrl(cfg);
+
+  async function handleTestProxy() {
+    const targetUrl = formattedUrl;
+    if (!targetUrl) {
+      toast.error("Please enter Proxy Address & Port first.");
+      return;
+    }
+    setTesting(true);
+    try {
+      const res = await testProxyConnection({ data: { proxy: targetUrl } });
+      if (res.ok) {
+        toast.success(`Proxy connected! Egress IP: ${res.ip}`);
+      } else {
+        toast.error(`Proxy test failed: ${res.error}`);
+      }
+    } catch (e: any) {
+      toast.error(`Proxy error: ${e.message}`);
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-card p-6">
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-lg font-semibold">YouTube Proxy Server</h3>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleTestProxy}
+          disabled={testing || !formattedUrl}
+          className="h-8 gap-1.5 font-mono text-[11px]"
+        >
+          {testing ? "Testing..." : "Test Proxy Connection"}
+        </Button>
+      </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Enter your HTTP/HTTPS proxy credentials below to route YouTube caption requests around VPS IP blocks.
+        See{" "}
+        <a
+          href="https://github.com/jdepoix/youtube-transcript-api?tab=readme-ov-file#working-around-ip-bans-requestblocked-or-ipblocked-exception"
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-primary hover:underline"
+        >
+          youtube-transcript-api IP ban guide ↗
+        </a>
+      </p>
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase text-muted-foreground">Proxy Address / Host</label>
+          <Input
+            value={cfg.proxyHost ?? ""}
+            onChange={(e) => setCfg({ proxyHost: e.target.value })}
+            placeholder="31.59.20.176"
+            className="font-mono text-xs"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase text-muted-foreground">Port</label>
+          <Input
+            value={cfg.proxyPort ?? ""}
+            onChange={(e) => setCfg({ proxyPort: e.target.value })}
+            placeholder="6754"
+            className="font-mono text-xs"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase text-muted-foreground">Username</label>
+          <Input
+            value={cfg.proxyUsername ?? ""}
+            onChange={(e) => setCfg({ proxyUsername: e.target.value })}
+            placeholder="htevhame"
+            className="font-mono text-xs"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block font-mono text-[10px] uppercase text-muted-foreground">Password</label>
+          <Input
+            type="password"
+            value={cfg.proxyPassword ?? ""}
+            onChange={(e) => setCfg({ proxyPassword: e.target.value })}
+            placeholder="••••••••"
+            className="font-mono text-xs"
+          />
+        </div>
+      </div>
+
+      {formattedUrl && (
+        <div className="mt-3 rounded border border-border/60 bg-muted/30 p-2 font-mono text-[11px] text-muted-foreground">
+          Assembled Proxy URL: <span className="text-foreground font-semibold">{formattedUrl.replace(/:[^:@]+@/, ":***@")}</span>
+        </div>
+      )}
+    </section>
   );
 }

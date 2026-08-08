@@ -53,7 +53,11 @@ export type Config = {
   analyzeBatchSize: number;
   /** Frame Grid Stitching mode: 'off' | '2x2' | '3x3' (default '3x3'). Combines 4 or 9 frames into 1 grid image per request. */
   analyzeGridStitch: "off" | "2x2" | "3x3";
-  /** Optional HTTP/HTTPS/SOCKS5 proxy URL to route YouTube requests through to bypass VPS IP blocks. */
+  /** Optional HTTP/HTTPS/SOCKS5 proxy settings to route YouTube requests through to bypass VPS IP blocks. */
+  proxyHost?: string;
+  proxyPort?: string;
+  proxyUsername?: string;
+  proxyPassword?: string;
   youtubeProxy?: string;
   /** Amazon API mode: use the new official Creators API, or fallback to the Lambda worker. */
   amazonApiMode: "creator" | "lambda";
@@ -255,6 +259,10 @@ const defaultConfig: Config = {
   analyzeMaxFrames: 12,
   analyzeBatchSize: 6,
   analyzeGridStitch: "3x3",
+  proxyHost: "",
+  proxyPort: "",
+  proxyUsername: "",
+  proxyPassword: "",
   youtubeProxy: "",
   amazonApiMode: "creator",
   amazonUseLambdaFallback: false,
@@ -264,6 +272,17 @@ const defaultConfig: Config = {
   amazonRegion: "NA",
   amazonMarketplace: "www.amazon.com",
 };
+
+export function getFormattedProxyUrl(cfg: Partial<Config>): string {
+  if (cfg.youtubeProxy?.trim()) return cfg.youtubeProxy.trim();
+  if (!cfg.proxyHost?.trim()) return "";
+  const host = cfg.proxyHost.trim();
+  const port = cfg.proxyPort?.trim() ? `:${cfg.proxyPort.trim()}` : "";
+  const auth = cfg.proxyUsername?.trim()
+    ? `${encodeURIComponent(cfg.proxyUsername.trim())}:${encodeURIComponent(cfg.proxyPassword?.trim() || "")}@`
+    : "";
+  return `http://${auth}${host}${port}`;
+}
 
 // ── In-memory caches ──────────────────────────────────────────────────────
 // Frame data URLs and voiceover audio can total many MB — well past the ~5MB

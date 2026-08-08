@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { UrlPreview } from "@/components/UrlPreview";
-import { useProject, useConfig } from "@/lib/store";
+import { useProject, useConfig, getFormattedProxyUrl } from "@/lib/store";
 import { setPendingVideoFile } from "@/lib/pending-upload";
 import { fetchTranscript } from "@/lib/youtube.functions";
 import { fetchAmazonByAsins, parseAsin } from "@/lib/amazon-input.functions";
@@ -111,7 +111,8 @@ function Index() {
       reset();
       setProject({ url, mode: "youtube" });
       activity.log("fetching captions via youtube-transcript-api…");
-      const res = await fetchTranscript({ data: { url, proxy: cfg.youtubeProxy } });
+      const proxyUrl = getFormattedProxyUrl(cfg);
+      const res = await fetchTranscript({ data: { url, proxy: proxyUrl } });
       const title = res.meta?.title;
       activity.log(
         `video: ${title?.slice(0, 60) ?? res.videoId ?? "unknown"}`,
@@ -133,7 +134,7 @@ function Index() {
           const resp = await fetch("/api/transcribe", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ url, proxy: cfg.youtubeProxy }),
+            body: JSON.stringify({ url, proxy: proxyUrl }),
           });
           const data = await resp.json();
           if (resp.ok && Array.isArray(data.segments) && data.segments.length > 0) {
