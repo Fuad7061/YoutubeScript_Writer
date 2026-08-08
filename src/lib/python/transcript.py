@@ -393,26 +393,55 @@ def _fetch_vtt(url2: str) -> str:
 
 
 def _parse_vtt(raw):
-    """Parse a WebVTT/SRT payload into [{start, dur, text}]."""
+    """Parse WebVTT, SRT, or JSON3 caption payloads into [{start, dur, text}]."""
+    raw_str = raw.strip()
+    if raw_str.startswith("{") or raw_str.startswith("["):
+        try:
+            data = json.loads(raw_str)
+            events = data.get("events") if isinstance(data, dict) else data
+            caps = []
+            for ev in (events if isinstance(events, list) else []):
+                start = (ev.get("tStartMs") or 0) / 1000.0
+                dur = (ev.get("dDurationMs") or 0) / 1000.0
+                segs = ev.get("segs") or []
+                text = "".join(s.get("utf8", "") for s in segs)
+                text = re.sub(r"<[^>]+>", "", text)
+                text = html.unescape(text).replace("\n", " ").strip()
+                if text:
+                    caps.append({"start": round(start, 3), "dur": round(max(dur, 0.1), 3), "text": text})
+            if caps:
+                return caps
+        except Exception:
+            pass
+
     caps = []
-    blocks = re.split(r"\n\s*\n", raw)
+    blocks = re.split(r"\n\s*\n", raw_str)
     time_re = re.compile(
-        r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})?\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})?")
+        r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})?\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})?"
+    )
     def _ts(h, m, s, ms):
         return int(h) * 3600 + int(m) * 60 + int(s) + (int(ms or 0) / (10 ** len(ms or "0")))
+
     for block in blocks:
-        lines = [l for l in block.splitlines() if l.strip()]
-        if len(lines) < 2:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if not lines:
             continue
-        m = time_re.search(lines[0])
-        if not m:
+        time_idx = -1
+        m = None
+        for idx, line in enumerate(lines):
+            m = time_re.search(line)
+            if m:
+                time_idx = idx
+                break
+        if not m or time_idx == -1:
             continue
+
         start = _ts(*m.groups()[:4])
         end = _ts(*m.groups()[4:])
-        text = " ".join(lines[1:])
+        text_lines = lines[time_idx + 1:]
+        text = " ".join(text_lines)
         text = re.sub(r"<[^>]+>", "", text)
         text = html.unescape(text).replace("\n", " ").strip()
-        text = re.sub(r"\[[^\]]*\]", "", text).strip()  # yt auto-subs tags like [Music]
         if text:
             caps.append({"start": round(start, 3), "dur": round(max(end - start, 0.1), 3), "text": text})
     return caps
@@ -477,6 +506,72 @@ def _from_whisper(url, vid, translate_to, size):
                            tinfo.language, task, segments)
 
 
+def _fetch_snapany_subtitles(url, vid, prefer):
+    """Fetch captions via Snapany API fallback when YouTube bot-checks the server IP."""
+    headers = {
+        "accept": "*/*",
+        "accept-language": "en",
+        "content-type": "application/json",
+        "g-footer": "2f709202d3c3805991cc8714f6887fd263a70f6584519f07f2559bc0a42d1ddf",
+        "g-timestamp": "1786207681596",
+        "g-timezone": "Asia/Dhaka",
+        "origin": "https://snapany.com",
+        "referer": "https://snapany.com/",
+        "user-agent": BROWSER_UA,
+    }
+    try:
+        from curl_cffi.requests import post as curl_post
+        res = curl_post(
+            "https://api.snapany.com/v1/extract/subtitles",
+            json={"url": f"https://www.youtube.com/watch?v={vid}"},
+            headers=headers,
+            impersonate="chrome",
+            timeout=15,
+        )
+        if res.status_code == 200:
+            data = res.json()
+            sub_tracks = data.get("subtitles") or []
+            if sub_tracks:
+                track = sub_tracks[0]
+                for t in sub_tracks:
+                    lang = (t.get("language_tag") or "").lower()
+                    if lang == "en" or lang.startswith("en"):
+                        track = t
+                        break
+                urls = track.get("urls") or []
+                item = next((u for u in urls if u.get("format") in ("srt", "vtt", "json3")), None) or (urls[0] if urls else None)
+                sub_url = item.get("url") if isinstance(item, dict) else item
+                if sub_url:
+                    raw_sub = _fetch_vtt(sub_url)
+                    caps = _parse_vtt(raw_sub)
+                    if caps:
+                        total = round(max((c["start"] + c["dur"] for c in caps), default=0.0), 3)
+                        chosen_name = track.get("language_name") or "English"
+                        chosen_tag = track.get("language_tag") or "en"
+                        return {
+                            "title": data.get("title") or get_title(vid),
+                            "video_id": vid,
+                            "url": f"https://www.youtube.com/watch?v={vid}",
+                            "source": "snapany-captions",
+                            "language": chosen_name,
+                            "language_code": chosen_tag,
+                            "is_generated": "auto-generated" in chosen_name.lower(),
+                            "translated_to": None,
+                            "available_languages": [
+                                {"code": t.get("language_tag"), "name": t.get("language_name"), "generated": "auto-generated" in t.get("language_name", "").lower()}
+                                for t in sub_tracks if t.get("language_tag")
+                            ],
+                            "duration_seconds": total,
+                            "duration": hms(total),
+                            "caption_count": len(caps),
+                            "transcript": " ".join(c["text"] for c in caps),
+                            "captions": caps,
+                        }
+    except Exception as e:
+        print(f"[transcript] Tier 1c (Snapany API) fallback exception: {e}", file=sys.stderr)
+    raise _NoCaptions
+
+
 # ---------- Public entry point ----------
 
 def transcript_json(url, prefer=("en",), translate_to=None,
@@ -519,6 +614,17 @@ def transcript_json(url, prefer=("en",), translate_to=None,
     except Exception as e:
         print(f"[transcript] Tier 1b error: {type(e).__name__}: {e}",
               file=sys.stderr)
+
+    # ── Tier 1c: Snapany API Fallback ────────────────────────────────────
+    # Uses external pre-signed timedtext URL signed with ip=0.0.0.0.
+    try:
+        result = _fetch_snapany_subtitles(url, vid, prefer)
+        print("[transcript] Tier 1c (Snapany API): success", file=sys.stderr)
+        return result
+    except _NoCaptions:
+        pass
+    except Exception as e:
+        print(f"[transcript] Tier 1c error: {type(e).__name__}: {e}", file=sys.stderr)
 
     # ── Tier 2: Whisper (audio transcription) ────────────────────────────
     # Works for any video regardless of caption availability or IP blocking.
