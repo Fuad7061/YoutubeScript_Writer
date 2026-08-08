@@ -97,7 +97,16 @@ async function resolveInnertube(rawUrl: string, quality: number): Promise<Picked
  * TLS fingerprint (curl_cffi impersonation) so the request looks like it
  * comes from a real browser instead of a datacenter server.
  */
-const YTDLP_PLAYER_CLIENTS = "web_embedded,tv_embedded,tv,android_vr";
+// `web` is listed FIRST on purpose: it is the only player client whose
+// extraction fetches the YouTube watch page, and that page carries the
+// attestation challenge (ytAtN) that the bgutil PO-token provider needs to
+// generate a token. The other clients (tv_embedded, tv, ...) call the
+// Innertube player API directly and never see the watch page, so the
+// provider would have to fetch the challenge itself from this (blocked) IP.
+// Order matters: web → web_embedded → tv_embedded → tv → android_vr.
+// YTDLP_PLAYER_CLIENTS can be overridden via env for experimentation.
+const YTDLP_PLAYER_CLIENTS =
+  process.env.YTDLP_PLAYER_CLIENTS || "web,web_embedded,tv_embedded,tv,android_vr";
 
 type YtDlpStreamResult =
   | { ok: true; stream: ReadableStream<Uint8Array>; mime: string }

@@ -21,9 +21,14 @@ from youtube_transcript_api import (
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36")
 
-# TV/embedded player clients are far less aggressively bot-checked than the
-# default web client when the request originates from a datacenter IP.
-_YDL_PLAYER_CLIENTS = ["tv_embedded", "tv", "web_embedded", "android_vr"]
+# `web` is listed FIRST: it is the only player client whose extraction fetches
+# the YouTube watch page, and that page carries the attestation challenge
+# (ytAtN) the bgutil PO-token provider needs to generate a token locally.
+# The other clients call the Innertube API directly and never see the page,
+# forcing the provider to fetch the challenge itself from this (blocked) IP.
+# Override with YTDLP_PLAYER_CLIENTS env var for experimentation.
+_YDL_PLAYER_CLIENTS = os.environ.get(
+    "YTDLP_PLAYER_CLIENTS", "web,tv_embedded,tv,web_embedded,android_vr").split(",")
 
 
 def _ydl_opts(extra=None):

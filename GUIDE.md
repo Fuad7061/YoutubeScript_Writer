@@ -132,10 +132,20 @@ uptime or their limits.
 | Problem | Check |
 |---|---|
 | App returns 401 | Use `Authorization: Bearer <APP_PASSWORD>`; check the env var in Coolify |
-| "Sign in to confirm you're not a bot" | Check the app logs for `PO token provider ready`; if missing, the provider's own error lines are in the same logs right above the warning |
+| "Sign in to confirm you're not a bot" | The PO token flow isn't completing yet — enable debug mode (see below) and share the log line |
 | Whisper fallback is slow | Change `whisperModel` to `base` (faster, slightly less accurate) |
 | Non-YouTube URL fails | That site may have changed; check the app logs for the yt-dlp error message |
 | No captions for a YouTube video | Normal — that video has no captions; the app falls back to Whisper automatically |
+| Server crashes / 502 with no clear cause | Check logs for `WritableStream` or `ERR_INVALID_STATE` — update to latest deploy |
+
+### Enable debug mode (temporary)
+
+To see exactly what the PO token flow is doing, set this env var in Coolify:
+
+- Name: `YTDLP_VERBOSE`
+- Value: `1`
+
+Then redeploy and try one video download. In the app logs, the `[media-proxy] yt-dlp stderr:` line will now show the full PO-token steps. Paste that line here and I'll fix the exact issue. (Set the value back to `0` or remove it when done — verbose mode is noisy.)
 
 ---
 
