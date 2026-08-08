@@ -14,7 +14,7 @@ it from n8n instead of paid tools like noteai or snapscooper.
 | yt-dlp | Downloads video info/audio/captions — also handles Facebook, TikTok, Instagram, X, Vimeo, 1000+ sites | Free |
 | youtube-transcript-api | Fast captions path | Free |
 | faster-whisper | Transcribes audio when a video has no captions | Free (runs on your CPU) |
-| PO token provider (optional) | Defeats YouTube's "not a bot" check on VPS IPs | Free (open source container) |
+| PO token provider (bundled) | Defeats YouTube's "not a bot" check on VPS IPs | Free (open source, built into the app) |
 | n8n | Your automation workflows | Free |
 | VPS + Coolify | The machine everything runs on | Already yours |
 
@@ -31,9 +31,10 @@ For a YouTube URL the app tries, in order:
    browser TLS impersonation (curl_cffi). This works for most videos.
 2. **Tier 2 — Whisper fallback** (only if no captions): yt-dlp downloads the
    audio, faster-whisper transcribes it on your VPS.
-3. **PO tokens** (if the provider is enabled): yt-dlp fetches a fresh token
-   from your provider before talking to YouTube, so the "Sign in to confirm
-   you're not a bot" page never appears.
+3. **PO tokens (automatic)**: the container's entrypoint starts a bundled
+   token provider on 127.0.0.1:4416 before the app boots. yt-dlp fetches
+   fresh tokens from it before talking to YouTube, so the "Sign in to
+   confirm you're not a bot" page never appears. No setup needed.
 
 Non-YouTube URLs (Facebook, TikTok, ...) go straight to yt-dlp.
 
@@ -51,43 +52,21 @@ That's it. Your app is rebuilt with the newest code.
 
 ---
 
-## 4. Enable PO tokens (free, recommended)
+## 4. PO tokens — already included, nothing to do
 
-This is the piece that makes YouTube stop showing the bot check on your VPS
-IP. You run one extra free container and give the app its address.
+The PO token provider is **built into the app container**. When the container
+starts, its entrypoint automatically:
 
-### Option A — through Coolify (easiest)
+1. Starts the bundled token provider on `127.0.0.1:4416` (inside the container).
+2. Waits until it is ready (you'll see `PO token provider ready on
+   127.0.0.1:4416` in the app logs).
+3. Then starts the app.
 
-1. Coolify → **New Resource** → **Docker Image**.
-2. Image: `brainicism/bgutil-ytdlp-pot-provider` (tag `latest`).
-3. Port: expose **4416**.
-4. Name it e.g. `bgutil-pot-provider` and create it.
-5. Now open your **YoutubeVideoScript_Maker** app → **Environment Variables**:
-   - Name: `BGUTIL_POT_URL`
-   - Value: `http://<your-vps-ip>:4416` (the public IP of the VPS)
-6. **Deploy** the app again.
+yt-dlp talks to it automatically — no ports, no extra containers, no env vars.
 
-### Option B — direct on the VPS (if you prefer SSH)
-
-SSH into your VPS and run:
-
-```bash
-docker run -d --name bgutil-pot-provider --restart unless-stopped \
-  -p 4416:4416 brainicism/bgutil-ytdlp-pot-provider:latest
-```
-
-Then add the same `BGUTIL_POT_URL` env var to the app and redeploy.
-
-### Verify the provider is alive
-
-```bash
-curl http://<your-vps-ip>:4416/health
-```
-
-It should answer quickly (it prints a status line).
-
-> Without `BGUTIL_POT_URL`, the app behaves exactly as before — nothing breaks.
-> The provider just makes YouTube requests more reliable from the VPS IP.
+> Advanced only: if you ever run an external provider on another host, set the
+> `BGUTIL_POT_URL` env var (e.g. `http://<ip>:4416`) on the app and it will use
+> that instead. Skip this unless you know you need it.
 
 ---
 
@@ -153,7 +132,7 @@ uptime or their limits.
 | Problem | Check |
 |---|---|
 | App returns 401 | Use `Authorization: Bearer <APP_PASSWORD>`; check the env var in Coolify |
-| "Sign in to confirm you're not a bot" | PO provider not running → run step 4; check `curl http://<vps-ip>:4416/health` |
+| "Sign in to confirm you're not a bot" | Check the app logs for `PO token provider ready`; if missing, look at `/tmp/bgutil-provider.log` inside the container |
 | Whisper fallback is slow | Change `whisperModel` to `base` (faster, slightly less accurate) |
 | Non-YouTube URL fails | That site may have changed; check the app logs for the yt-dlp error message |
 | No captions for a YouTube video | Normal — that video has no captions; the app falls back to Whisper automatically |
@@ -165,11 +144,11 @@ uptime or their limits.
 ```bash
 # SSH into VPS, then:
 
-# See provider status
-docker logs bgutil-pot-provider --tail 20
+# Check the app container logs (look for "PO token provider ready")
+docker logs <your-app-container-name> --tail 50
 
-# Test provider health
-curl http://127.0.0.1:4416/health
+# Check the bundled provider's own log (inside the container)
+docker exec <your-app-container-name> cat /tmp/bgutil-provider.log
 
 # Restart the app container (or just click Deploy in Coolify)
 docker restart <your-app-container-name>
