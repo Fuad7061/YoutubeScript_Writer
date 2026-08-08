@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { innertubeCaptions, extractVideoId } from "./youtube-innertube.server";
 
 const Input = z.object({
   url: z.string().min(1),
@@ -66,6 +67,35 @@ export const fetchTranscript = createServerFn({ method: "POST" })
     // The Python script always returns a JSON object.
     // Check for errors or missing captions.
     if (raw.error === "NoCaptionsAvailable" || raw.error === "VideoUnavailable") {
+      // Tier 1c: InnerTube (IOS client) timedtext captions — works from
+      // datacenter IPs where the web-based transcript/yt-dlp endpoints get
+      // bot-checked.
+      const inner = await innertubeCaptions(data.url);
+      if (inner && inner.captions.length > 0) {
+        return {
+          videoId: extractVideoId(data.url) ?? null,
+          transcript: inner.captions.map((c) => ({
+            text: c.text,
+            start: c.start,
+            duration: c.duration,
+          })),
+          meta: {
+            videoId: extractVideoId(data.url) ?? null,
+            title: inner.title ?? undefined,
+            url: data.url,
+            language: inner.language ?? undefined,
+            languageCode: inner.languageCode ?? undefined,
+            isGenerated: inner.isGenerated ?? undefined,
+            availableLanguages: [],
+            durationSeconds: null,
+            duration: undefined,
+            captionCount: inner.captions.length,
+            source: "innertube",
+          },
+          reason: "captions" as const,
+        };
+      }
+
       return {
         videoId: raw.video_id ?? null,
         transcript: [] as Array<{ text: string; start: number; duration: number }>,

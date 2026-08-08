@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { spawn } from "node:child_process";
 import { requireAuth } from "@/lib/auth.server";
 
 /**
@@ -6,13 +7,12 @@ import { requireAuth } from "@/lib/auth.server";
  *
  * Modes:
  *   ?u=<encoded https url>              → GET pass-through (allowlisted hosts)
- *   ?resolve=youtube&url=...&quality=…  → Resolve via noteai/snapscooper AND
- *                                        stream in the SAME request. Required
- *                                        for googlevideo because it IP-locks
- *                                        signed URLs to the requester's egress
- *                                        IP — two-hop flows fail with 403
- *                                        whenever the Worker's outbound IP
- *                                        changes between resolve and download.
+ *   ?resolve=youtube&url=...&quality=…  → Resolve via innertube/noteai/
+ *                                        snapscooper AND stream in the SAME
+ *                                        request, falling back to a direct
+ *                                        yt-dlp stream (TV client + browser
+ *                                        TLS impersonation) when the VPS
+ *                                        datacenter IP is bot-blocked.
  *   ?service=dltkk&url=...              → POST to dltkk with JSON body
  */
 
@@ -37,25 +37,39 @@ function isAllowedHost(host: string): boolean {
   return false;
 }
 
+/** Full Chrome 150 header set so third-party APIs can't fingerprint Node. */
+function browserHeaders(origin: string, referer: string): Record<string, string> {
+  return {
+    "user-agent": BROWSER_UA,
+    accept: "*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "sec-ch-ua": '"Not/A)Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"macOS"',
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    origin,
+    referer,
+  };
+}
+
 function headersForTarget(target: URL, range: string | null): Record<string, string> {
   const isGoogle = target.hostname.endsWith("googlevideo.com");
   const isSmvd = target.hostname.endsWith("smvd.xyz");
   const signedClient = target.searchParams.get("c") ?? "";
   const ua = isGoogle && signedClient === "ANDROID_VR" ? ANDROID_VR_UA : BROWSER_UA;
   const effectiveRange = range ?? (isGoogle ? "bytes=0-" : null);
-  const refererFor = () => {
-    if (isGoogle) return "https://www.youtube.com/";
-    if (isSmvd) return "https://snapscooper.com/";
-    return "https://yoink.tools/";
-  };
+  const base = isGoogle
+    ? { referer: "https://www.youtube.com/", origin: "https://www.youtube.com" }
+    : isSmvd
+      ? { referer: "https://snapscooper.com/", origin: "https://snapscooper.com" }
+      : { referer: "https://yoink.tools/", origin: "https://yoink.tools" };
   return {
-    referer: refererFor(),
+    ...base,
     "user-agent": ua,
     accept: "*/*",
-    ...(isGoogle
-      ? { "accept-language": "en-US,en;q=0.9", origin: "https://www.youtube.com" }
-      : {}),
-    ...(isSmvd ? { origin: "https://snapscooper.com" } : {}),
+    "accept-language": "en-US,en;q=0.9",
     ...(effectiveRange ? { range: effectiveRange } : {}),
   };
 }
@@ -79,13 +93,7 @@ async function proxyPass(target: URL, range: string | null) {
 async function proxyDltkk(url: string, format: string, platform: string, quality: string) {
   const upstream = await fetch("https://dltkk.to/api/download", {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      origin: "https://dltkk.to",
-      referer: "https://dltkk.to/",
-      "user-agent": BROWSER_UA,
-      accept: "*/*",
-    },
+    headers: browserHeaders("https://dltkk.to", "https://dltkk.to/"),
     body: JSON.stringify({ url, format, platform, quality }),
   });
   return relayResponse(upstream);
@@ -128,13 +136,7 @@ async function resolveNoteai(rawUrl: string, quality: number): Promise<PickedStr
   const videoUrl = normalizeYouTube(rawUrl);
   const res = await fetch("https://www.noteai.io/api/tools/youtube/info", {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      origin: "https://www.noteai.io",
-      referer: "https://www.noteai.io/621/youtube-video-downloader",
-      "user-agent": BROWSER_UA,
-    },
+    headers: browserHeaders("https://www.noteai.io", "https://www.noteai.io/621/youtube-video-downloader"),
     body: JSON.stringify({ video: videoUrl }),
   });
   if (!res.ok) return null;
@@ -165,13 +167,7 @@ async function resolveNoteai(rawUrl: string, quality: number): Promise<PickedStr
 async function resolveSnapscooper(rawUrl: string, quality: number): Promise<PickedStream | null> {
   const res = await fetch("https://snapscooper.com/api/tool/post-info", {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      origin: "https://snapscooper.com",
-      referer: "https://snapscooper.com/tools/yt1",
-      "user-agent": BROWSER_UA,
-    },
+    headers: browserHeaders("https://snapscooper.com", "https://snapscooper.com/tools/yt1"),
     body: JSON.stringify({ toolId: "youtube", url: rawUrl, highres: false }),
   });
   if (!res.ok) return null;
@@ -210,11 +206,94 @@ async function resolveInnertube(rawUrl: string, quality: number): Promise<Picked
   return { url: picked.videoUrl, audioUrl: picked.audioUrl };
 }
 
+/**
+ * Last-resort resolve+stream: yt-dlp running on this server.
+ *
+ * Third-party resolvers (noteai/snapscooper/innertube) sign googlevideo URLs
+ * for their OWN egress IP; when the VPS datacenter IP then fetches them,
+ * YouTube's edge rejects the request (403 "edge") because it only trusts
+ * residential IPs for signed URLs. yt-dlp solves both problems at once:
+ * it resolves AND downloads from this server's own IP, using TV/embedded
+ * player clients (far less bot-checked than the web client) plus a browser
+ * TLS fingerprint (curl_cffi impersonation) so the request looks like it
+ * comes from a real browser instead of a server.
+ */
+const YTDLP_PLAYER_CLIENTS = "tv_embedded,tv,web_embedded,android_vr";
+
+function ytDlpStream(
+  rawUrl: string,
+  quality: number,
+  track: "video" | "audio",
+  signal?: AbortSignal,
+): Promise<{ stream: ReadableStream<Uint8Array>; mime: string } | null> {
+  const mime = track === "audio" ? "audio/mp4" : "video/mp4";
+  const format =
+    track === "audio"
+      ? "bestaudio[ext=m4a]/bestaudio/best"
+      : `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best[ext=mp4]/best`;
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--quiet",
+    "--no-progress",
+    "--no-part",
+    "--ignore-errors",
+    "--no-cache-dir",
+    "--impersonate",
+    "chrome",
+    "--extractor-args",
+    `youtube:player_client=${YTDLP_PLAYER_CLIENTS}`,
+    "-f",
+    format,
+    "-o",
+    "-",
+    "--",
+    rawUrl,
+  ];
+  return new Promise((resolve) => {
+    const child = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    let settled = false;
+    let stderrTail = "";
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!ok) {
+        try { child.kill("SIGKILL"); } catch {}
+        void writer.abort(new Error(`yt-dlp failed: ${stderrTail.slice(-200)}`));
+        resolve(null);
+      } else {
+        resolve({ stream: readable, mime });
+      }
+    };
+    // yt-dlp needs to produce its first byte within 90s or it's stuck
+    // (proxy DNS, bot-checked player, etc.).
+    const timer = setTimeout(() => finish(false), 90_000);
+    child.stderr.on("data", (d: Buffer) => {
+      stderrTail = (stderrTail + d.toString()).slice(-400);
+    });
+    child.stdout.on("data", (d: Buffer) => {
+      if (!settled) finish(true);
+      void writer.write(new Uint8Array(d));
+    });
+    child.stdout.on("end", () => {
+      if (settled) void writer.close();
+      else finish(false);
+    });
+    child.stdout.on("error", () => finish(false));
+    child.on("error", () => finish(false));
+    signal?.addEventListener("abort", () => finish(false), { once: true });
+  });
+}
+
 async function proxyResolveYouTube(
   rawUrl: string,
   quality: number,
   track: "video" | "audio",
   range: string | null,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const attempts: Array<() => Promise<PickedStream | null>> = [
     () => resolveInnertube(rawUrl, quality),
@@ -240,6 +319,22 @@ async function proxyResolveYouTube(
       errs.push((e as Error).message);
     }
   }
+  // Final fallback: direct yt-dlp stream from this server's own egress IP.
+  try {
+    const direct = await ytDlpStream(rawUrl, quality, track, signal);
+    if (!direct) {
+      errs.push("yt-dlp: no stream");
+    } else {
+      return relayResponse(
+        new Response(direct.stream, {
+          status: 200,
+          headers: { "content-type": direct.mime, "cache-control": "private, max-age=60" },
+        }),
+      );
+    }
+  } catch (e) {
+    errs.push(`yt-dlp: ${(e as Error).message}`);
+  }
   return new Response(`youtube resolve+stream failed: ${errs.join(" | ")}`, { status: 502 });
 }
 
@@ -261,7 +356,7 @@ export const Route = createFileRoute("/api/media-proxy")({
           const track = (url.searchParams.get("track") === "audio" ? "audio" : "video") as
             | "video"
             | "audio";
-          return proxyResolveYouTube(src, quality, track, request.headers.get("range"));
+          return proxyResolveYouTube(src, quality, track, request.headers.get("range"), request.signal);
         }
 
         if (service === "dltkk") {

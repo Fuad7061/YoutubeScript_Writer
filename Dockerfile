@@ -21,19 +21,29 @@ FROM node:22-slim AS run
 WORKDIR /app
 
 # Install system ffmpeg and python for backend scripts
+# curl_cffi gives yt-dlp / youtube-transcript-api browser TLS impersonation,
+# which is what keeps YouTube from bot-blocking the VPS datacenter egress IP.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg python3 python3-venv python3-pip wget && \
     python3 -m venv /app/fast-whisper-env && \
-    /app/fast-whisper-env/bin/pip install --no-cache-dir youtube-transcript-api yt-dlp faster-whisper && \
+    /app/fast-whisper-env/bin/pip install --no-cache-dir --upgrade \
+        youtube-transcript-api yt-dlp "curl_cffi>=0.10,<0.16" faster-whisper && \
     rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
 ENV PORT=9090
 ENV DATA_DIR=/data
 ENV PATH="/app/fast-whisper-env/bin:$PATH"
+ENV HF_HOME=/data/huggingface
 
 # Create persistent data directory
 RUN mkdir -p /data
+
+# Pre-download the default Whisper model ("small") into the image so the
+# container never needs to reach huggingface.co at runtime (VPS egress is
+# often blocked). The cache lands on the /data volume on first boot.
+RUN /app/fast-whisper-env/bin/python3 -c \
+    "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8'); print('whisper model cached OK')"
 
 # Copy built assets and required files
 # NOTE: src/ is required at runtime — vite preview re-resolves the TanStack

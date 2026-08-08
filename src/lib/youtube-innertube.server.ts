@@ -28,6 +28,20 @@ export type InnertubePicked = {
   meta: { title?: string; duration?: number; thumbnail?: string };
 };
 
+export type InnertubeCaption = {
+  text: string;
+  start: number;
+  duration: number;
+};
+
+export type InnertubeCaptionsResult = {
+  captions: InnertubeCaption[];
+  language?: string;
+  languageCode?: string;
+  isGenerated?: boolean;
+  title?: string;
+};
+
 let ytPromise: Promise<Innertube> | undefined;
 function getYt(): Promise<Innertube> {
   if (!ytPromise) {
@@ -157,3 +171,102 @@ export async function innertubeResolve(
   if (!videoOnly || !m4a) return null;
   return { videoUrl: videoOnly.url, audioUrl: m4a.url, audioSeparate: true, meta };
 }
+
+/**
+ * Fetch real captions via the InnerTube timedtext API (youtubei.js).
+ *
+ * This uses the app/client endpoints rather than the web watch-page HTML,
+ * so it typically still works from datacenter IPs where both
+ * youtube-transcript-api and yt-dlp's web client get bot-checked.
+ *
+ * Returns null when the video has no captions at all.
+ */
+export async function innertubeCaptions(
+  rawUrl: string,
+): Promise<InnertubeCaptionsResult | null> {
+  const id = extractVideoId(rawUrl);
+  if (!id) return null;
+
+  try {
+    const yt = await getYt();
+    const info = await yt.getInfo(id, { client: "IOS" });
+    const tracklist = info.captions;
+    const tracks = tracklist?.caption_tracks ?? [];
+    if (tracks.length === 0) return null;
+
+    // Prefer manual English, then any manual, then auto-generated.
+    const rank = (t: CaptionTrackData) => {
+      const lang = (t.language_code ?? "").toLowerCase();
+      const manual = !t.kind || t.kind !== "asr";
+      let score = manual ? 10 : 0;
+      if (lang === "en" || lang.startsWith("en-")) score += 5;
+      else if (manual) score += 2;
+      return score;
+    };
+    const best = [...tracks].sort((a, b) => rank(b) - rank(a))[0];
+    if (!best?.base_url) return null;
+
+    const res = await fetch(best.base_url);
+    if (!res.ok) return null;
+    const raw = await res.text();
+
+    let captions: InnertubeCaption[] = [];
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      // json3 format: {"events":[{"tStartMs":0,"dDurationMs":1000,"segs":[{"utf8":"..."}]}]}
+      try {
+        const data = JSON.parse(trimmed);
+        const events: any[] = data.events ?? data;
+        for (const ev of Array.isArray(events) ? events : []) {
+          const start = (ev.tStartMs ?? 0) / 1000;
+          const dur = (ev.dDurationMs ?? 0) / 1000;
+          const text = (ev.segs ?? [])
+            .map((s: any) => s.utf8 ?? "")
+            .join("")
+            .replace(/<[^>]+>/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+          if (text) captions.push({ text, start, duration: dur || 0.1 });
+        }
+      } catch {
+        captions = [];
+      }
+    } else {
+      // timedtext XML: <text start="0.24" dur="3.6">Hello world</text>
+      const re = /<text\s+start="([\d.]+)"\s+dur="([\d.]+)"[^>]*>([\s\S]*?)<\/text>/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(raw)) !== null) {
+        const start = Number(m[1]);
+        const dur = Number(m[2] ?? 0);
+        const text = (m[3] ?? "")
+          .replace(/<[^>]+>/g, "")
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (text) captions.push({ text, start, duration: dur || 0.1 });
+      }
+    }
+
+    if (captions.length === 0) return null;
+    return {
+      captions,
+      language: best.name?.toString?.() ?? undefined,
+      languageCode: best.language_code ?? undefined,
+      isGenerated: best.kind === "asr",
+      title: info.basic_info?.title,
+    };
+  } catch {
+    return null;
+  }
+}
+
+type CaptionTrackData = {
+  base_url: string;
+  name?: { toString?: () => string };
+  language_code?: string;
+  kind?: string;
+};
