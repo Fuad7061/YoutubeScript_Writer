@@ -14,6 +14,7 @@ it from n8n instead of paid tools like noteai or snapscooper.
 | yt-dlp | Downloads video info/audio/captions — also handles Facebook, TikTok, Instagram, X, Vimeo, 1000+ sites | Free |
 | youtube-transcript-api | Fast captions path | Free |
 | faster-whisper | Transcribes audio when a video has no captions | Free (runs on your CPU) |
+| PO token provider (optional) | Unlocks real video formats on a flagged IP | Free (built in, env-gated) |
 | n8n | Your automation workflows | Free |
 | VPS + Coolify | The machine everything runs on | Already yours |
 
@@ -30,6 +31,12 @@ For a YouTube URL the app tries, in order:
    browser TLS impersonation (curl_cffi). This works for most videos.
 2. **Tier 2 — Whisper fallback** (only if no captions): yt-dlp downloads the
    audio, faster-whisper transcribes it on your VPS.
+3. **PO tokens (automatic)**: a bundled provider starts inside the container and
+   yt-dlp fetches fresh tokens from it. On a flagged datacenter IP this is often
+   the signal that unlocks real video/audio formats (without it YouTube may serve
+   only storyboard images). Disable with `ENABLE_POT=0` in Coolify if your IP is clean.
+4. **YouTube cookies**: paste your browser's YouTube cookies in Settings so yt-dlp
+   sends a verified, logged-in session.
 
 Non-YouTube URLs (Facebook, TikTok, ...) go straight to yt-dlp.
 

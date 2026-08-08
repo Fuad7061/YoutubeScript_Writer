@@ -5,13 +5,21 @@ WORKDIR /app
 # Python + C++ toolchain required by better-sqlite3 (node-gyp) during install
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip build-essential make g++ && \
-    rm -rf /var/lib/aptists/*
+    rm -rf /var/lib/apt/lists/*
 
 COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile
 
 COPY . .
 RUN bun run build
+
+# --- PO Token Provider Source ---
+# Official bgutil-ytdlp-pot-provider image (node variant), pinned to an
+# immutable SHA tag. Only the compiled server + its runtime deps are copied
+# (not the full build image) to keep the final image small. Canvas is listed in
+# its dependencies but is never imported by the server code, so the copy is
+# ABI-agnostic. Started at runtime only when ENABLE_POT != "0".
+FROM brainicism/bgutil-ytdlp-pot-provider:sha-7608dd5-node AS pot
 
 # --- Runtime Stage ---
 # Node, not Bun: Bun cannot dlopen the better-sqlite3 native addon on Linux
@@ -27,7 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg python3 python3-venv python3-pip wget && \
     python3 -m venv /app/fast-whisper-env && \
     /app/fast-whisper-env/bin/pip install --no-cache-dir --upgrade \
-        youtube-transcript-api yt-dlp "curl_cffi>=0.10,<0.16" faster-whisper && \
+        youtube-transcript-api yt-dlp "curl_cffi>=0.10,<0.16" faster-whisper \
+        bgutil-ytdlp-pot-provider && \
     rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
@@ -54,6 +63,12 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/vite.config.ts ./vite.config.ts
 COPY --from=build /app/src ./src
 
+# Bundled PO token provider (bgutil-ytdlp-pot-provider): copy only the compiled
+# server + its runtime node_modules from the pinned image. Started by entrypoint
+# only when ENABLE_POT != "0", so it stays dormant for users on clean IPs.
+COPY --from=pot /app/build ./opt/bgutil/build
+COPY --from=pot /app/node_modules ./opt/bgutil/node_modules
+
 # better-sqlite3 was compiled in the build stage against a newer glibc
 # (oven/bun images are trixie-based) than this Debian bookworm runtime.
 # Rebuild the native addon here so it links against this image's glibc,
@@ -74,4 +89,9 @@ EXPOSE 9090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD wget -qO- http://localhost:${PORT}/api/healthz || exit 1
 
-CMD ["node", "node_modules/vite/bin/vite.js", "preview"]
+# entrypoint.sh starts the PO token provider (when ENABLE_POT != "0") and waits
+# for it to be healthy, then execs the app (vite preview).
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+CMD ["/entrypoint.sh", "node", "node_modules/vite/bin/vite.js", "preview"]
