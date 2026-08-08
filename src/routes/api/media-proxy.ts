@@ -97,7 +97,7 @@ async function resolveInnertube(rawUrl: string, quality: number): Promise<Picked
  * TLS fingerprint (curl_cffi impersonation) so the request looks like it
  * comes from a real browser instead of a datacenter server.
  */
-const YTDLP_PLAYER_CLIENTS = "tv_embedded,tv,web_embedded,android_vr";
+const YTDLP_PLAYER_CLIENTS = "web_embedded,tv_embedded,tv,android_vr";
 
 type YtDlpStreamResult =
   | { ok: true; stream: ReadableStream<Uint8Array>; mime: string }
@@ -114,10 +114,11 @@ function ytDlpStream(
     track === "audio"
       ? "bestaudio[ext=m4a]/bestaudio/best"
       : `best[height<=${quality}][ext=mp4]/best[height<=${quality}]/best[ext=mp4]/best`;
+  // YTDLP_VERBOSE=1 drops --quiet/--no-warnings so the POT framework logs
+  // (and any bot-check errors) are captured in the media-proxy log.
+  const verbose = process.env.YTDLP_VERBOSE === "1";
   const args = [
     "--no-playlist",
-    "--no-warnings",
-    "--quiet",
     "--no-progress",
     "--no-part",
     "--ignore-errors",
@@ -134,25 +135,31 @@ function ytDlpStream(
   if (potUrl) {
     args.push("--extractor-args", `youtubepot-bgutilhttp:base_url=${potUrl}`);
   }
+  if (verbose) {
+    args.push("--verbose");
+  } else {
+    args.push("--no-warnings", "--quiet");
+  }
   args.push("-f", format, "-o", "-", "--", rawUrl);
   return new Promise((resolve) => {
     const child = spawn("yt-dlp", args, { stdio: ["ignore", "pipe", "pipe"] });
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     let settled = false;
+    let aborted = false;
     let stderrTail = "";
     const finish = (ok: boolean, reason?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (!ok) {
+        aborted = true;
         try { child.kill("SIGKILL"); } catch {}
-        const detail = stderrTail.slice(-400);
+        const detail = stderrTail.slice(-1500);
         const msg = [reason ?? "yt-dlp failed", detail && `stderr: ${detail}`]
           .filter(Boolean)
           .join(" — ")
-          .slice(0, 600);
-        // The browser only sees the status code; log the real error here.
+          .slice(0, 2000);
         console.error(`[media-proxy] yt-dlp failed for ${rawUrl}: ${msg}`);
         void writer.abort(new Error(msg));
         resolve({ ok: false, reason: msg });
@@ -164,19 +171,17 @@ function ytDlpStream(
     // (proxy DNS, bot-checked player, etc.).
     const timer = setTimeout(() => finish(false, "timeout: no first byte within 90s"), 90_000);
     child.stderr.on("data", (d: Buffer) => {
-      stderrTail = (stderrTail + d.toString()).slice(-400);
+      stderrTail = (stderrTail + d.toString()).slice(-1500);
     });
     child.stdout.on("end", () => {
-      if (settled) void writer.close();
-      else finish(false, "yt-dlp exited without producing a stream");
+      // Only close on the success path. Never close after abort — closing an
+      // aborted WritableStream throws ERR_INVALID_STATE and crashes Node.
+      if (settled && !aborted) void writer.close().catch(() => {});
+      else if (!settled) finish(false, "yt-dlp exited without producing a stream");
     });
     child.stdout.on("data", (d: Buffer) => {
       if (!settled) finish(true);
-      void writer.write(new Uint8Array(d));
-    });
-    child.stdout.on("end", () => {
-      if (settled) void writer.close();
-      else finish(false, "yt-dlp exited without producing a stream");
+      void writer.write(new Uint8Array(d)).catch(() => {});
     });
     child.stdout.on("error", () => finish(false));
     child.on("error", (e) => finish(false, `spawn error: ${e.message}`));
