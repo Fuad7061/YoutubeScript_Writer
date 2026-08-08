@@ -42,6 +42,12 @@ def _ydl_opts(extra=None):
         "retries": 5,
         "extractor_args": {"youtube": {"player_client": _YDL_PLAYER_CLIENTS}},
     }
+    # YouTube cookies (Netscape cookies.txt) — when present, yt-dlp sends them so
+    # YouTube sees a logged-in, verified session. The most reliable way to pass
+    # the "Sign in to confirm you're not a bot" check on a flagged datacenter IP.
+    cookies_path = os.environ.get("YOUTUBE_COOKIES_PATH", "/data/youtube-cookies.txt")
+    if os.path.exists(cookies_path):
+        opts["cookiefile"] = cookies_path
     # Self-hosted PO token provider (bgutil-ytdlp-pot-provider container) —
     # defeats the "Sign in to confirm you're not a bot" check on flagged
     # datacenter IPs. Without BGUTIL_POT_URL set, yt-dlp runs as before.

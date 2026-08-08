@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { requireAuth } from "@/lib/auth.server";
 
 /**
@@ -143,6 +144,13 @@ function ytDlpStream(
   const potUrl = process.env.BGUTIL_POT_URL;
   if (potUrl) {
     args.push("--extractor-args", `youtubepot-bgutilhttp:base_url=${potUrl}`);
+  }
+  // YouTube cookies (Netscape cookies.txt) — when present, yt-dlp sends them so
+  // YouTube sees a logged-in, verified session. This is the most reliable way to
+  // pass the "Sign in to confirm you're not a bot" check on a flagged IP.
+  const cookiesPath = process.env.YOUTUBE_COOKIES_PATH || "/data/youtube-cookies.txt";
+  if (existsSync(cookiesPath)) {
+    args.push("--cookies", cookiesPath);
   }
   if (verbose) {
     args.push("--verbose");

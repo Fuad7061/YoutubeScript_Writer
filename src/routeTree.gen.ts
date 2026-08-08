@@ -27,6 +27,7 @@ import { Route as ApiHealthzRouteImport } from './routes/api/healthz'
 import { Route as ApiMediaProxyRouteImport } from './routes/api/media-proxy'
 import { Route as ApiSessionsRouteImport } from './routes/api/sessions'
 import { Route as ApiTranscribeRouteImport } from './routes/api/transcribe'
+import { Route as ApiYoutubeCookiesRouteImport } from './routes/api/youtube-cookies'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -118,6 +119,11 @@ const ApiTranscribeRoute = ApiTranscribeRouteImport.update({
   path: '/api/transcribe',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiYoutubeCookiesRoute = ApiYoutubeCookiesRouteImport.update({
+  id: '/api/youtube-cookies',
+  path: '/api/youtube-cookies',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -138,6 +144,7 @@ export interface FileRoutesByFullPath {
   '/api/media-proxy': typeof ApiMediaProxyRoute
   '/api/sessions': typeof ApiSessionsRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/youtube-cookies': typeof ApiYoutubeCookiesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -158,6 +165,7 @@ export interface FileRoutesByTo {
   '/api/media-proxy': typeof ApiMediaProxyRoute
   '/api/sessions': typeof ApiSessionsRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/youtube-cookies': typeof ApiYoutubeCookiesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -179,6 +187,7 @@ export interface FileRoutesById {
   '/api/media-proxy': typeof ApiMediaProxyRoute
   '/api/sessions': typeof ApiSessionsRoute
   '/api/transcribe': typeof ApiTranscribeRoute
+  '/api/youtube-cookies': typeof ApiYoutubeCookiesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -201,6 +210,7 @@ export interface FileRouteTypes {
     | '/api/media-proxy'
     | '/api/sessions'
     | '/api/transcribe'
+    | '/api/youtube-cookies'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -221,6 +231,7 @@ export interface FileRouteTypes {
     | '/api/media-proxy'
     | '/api/sessions'
     | '/api/transcribe'
+    | '/api/youtube-cookies'
   id:
     | '__root__'
     | '/'
@@ -241,6 +252,7 @@ export interface FileRouteTypes {
     | '/api/media-proxy'
     | '/api/sessions'
     | '/api/transcribe'
+    | '/api/youtube-cookies'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -262,6 +274,7 @@ export interface RootRouteChildren {
   ApiMediaProxyRoute: typeof ApiMediaProxyRoute
   ApiSessionsRoute: typeof ApiSessionsRoute
   ApiTranscribeRoute: typeof ApiTranscribeRoute
+  ApiYoutubeCookiesRoute: typeof ApiYoutubeCookiesRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -392,6 +405,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTranscribeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/youtube-cookies': {
+      id: '/api/youtube-cookies'
+      path: '/api/youtube-cookies'
+      fullPath: '/api/youtube-cookies'
+      preLoaderRoute: typeof ApiYoutubeCookiesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -414,6 +434,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiMediaProxyRoute: ApiMediaProxyRoute,
   ApiSessionsRoute: ApiSessionsRoute,
   ApiTranscribeRoute: ApiTranscribeRoute,
+  ApiYoutubeCookiesRoute: ApiYoutubeCookiesRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

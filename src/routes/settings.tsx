@@ -8,6 +8,7 @@ import { searchAmazon } from "@/lib/amazon.functions";
 import { toast } from "sonner";
 import { Plus, Trash2, Zap, Database, HardDriveDownload } from "lucide-react";
 import { useState, useEffect } from "react";
+import { Textarea } from "@/components/ui/textarea";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -148,6 +149,23 @@ function SettingsPage() {
           </label>
         </section>
 
+        <section className="rounded-lg border border-border bg-card p-6">
+          <h3 className="mb-1 text-lg font-semibold">YouTube cookies</h3>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Your VPS IP is being flagged by YouTube ("Sign in to confirm you're not a bot").
+            Paste YouTube cookies from a browser where you're logged in — yt-dlp will send them so YouTube
+            sees a verified, logged-in session instead of a bare datacenter IP.{" "}
+            <a
+              href="https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
+              target="_blank"
+              rel="noreferrer noopener"
+              className="text-primary hover:underline"
+            >
+              How to export cookies ↗
+            </a>
+          </p>
+          <CookiesPanel />
+        </section>
 
         <section className="rounded-lg border border-border bg-card p-6">
           <h3 className="mb-1 text-lg font-semibold">Gemini TTS · API keys</h3>
@@ -473,6 +491,92 @@ function SettingsPage() {
         </section>
       </div>
     </AppShell>
+  );
+}
+
+function CookiesPanel() {
+  const [info, setInfo] = useState<{ present: boolean; bytes?: number; updatedAt?: string } | null>(null);
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/youtube-cookies")
+      .then((r) => r.json())
+      .then((d) => setInfo(d))
+      .catch(() => {});
+  }, []);
+
+  async function save() {
+    if (!value.trim()) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await fetch("/api/youtube-cookies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cookies: value.trim() }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `${r.status}`);
+      setValue("");
+      setInfo({ present: true, bytes: d.bytes, updatedAt: new Date().toISOString() });
+      setMsg({ kind: "ok", text: `Saved ${d.bytes} bytes. yt-dlp will use these cookies on the next request.` });
+      toast.success("YouTube cookies saved");
+    } catch (e: any) {
+      setMsg({ kind: "err", text: e.message });
+      toast.error(`Save failed: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    try {
+      const r = await fetch("/api/youtube-cookies", { method: "DELETE" });
+      if (!r.ok) throw new Error(`${r.status}`);
+      setInfo({ present: false });
+      setMsg({ kind: "ok", text: "Cookies removed." });
+      toast.success("YouTube cookies removed");
+    } catch (e: any) {
+      toast.error(`Remove failed: ${e.message}`);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {info?.present && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+          <span className="font-mono text-primary">
+            ✓ cookies set · {info.bytes} bytes · updated {info.updatedAt ? new Date(info.updatedAt).toLocaleString() : "unknown"}
+          </span>
+          <Button size="sm" variant="ghost" onClick={remove} className="h-7 gap-1 text-muted-foreground hover:text-destructive">
+            <Trash2 className="h-3 w-3" /> remove
+          </Button>
+        </div>
+      )}
+      <Textarea
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={"# Paste either format:\n#\n# 1) Netscape cookies.txt (from a browser export extension):\n# Netscape HTTP Cookie File\n# .youtube.com\tTRUE\t/\tTRUE\t0\tSID\t...\n#\n# 2) A cookie header string:\n# SID=abc; HSID=def; SSID=ghi"}
+        className="min-h-[120px] font-mono text-xs"
+      />
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={save} disabled={saving || !value.trim()} className="font-mono text-[11px]">
+          {saving ? "Saving…" : "Save cookies"}
+        </Button>
+        {info?.present && <span className="font-mono text-[10px] text-muted-foreground">Saving overwrites the existing file.</span>}
+      </div>
+      {msg && (
+        <p className={`font-mono text-[11px] ${msg.kind === "ok" ? "text-primary" : "text-destructive"}`}>
+          {msg.text}
+        </p>
+      )}
+      <p className="font-mono text-[10px] text-muted-foreground">
+        Stored at <code>/data/youtube-cookies.txt</code> on the server (persists across re-deploys).
+        Cookies expire eventually — re-export and re-paste when downloads stop working.
+      </p>
+    </div>
   );
 }
 
