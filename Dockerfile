@@ -23,11 +23,15 @@ WORKDIR /app
 # Install system ffmpeg and python for backend scripts
 # curl_cffi gives yt-dlp / youtube-transcript-api browser TLS impersonation,
 # which is what keeps YouTube from bot-blocking the VPS datacenter egress IP.
+# bgutil-ytdlp-pot-provider is the yt-dlp plugin that fetches PO tokens from
+# the self-hosted provider container (see BGUTIL_POT_URL env) — the standard
+# fix for "Sign in to confirm you're not a bot" on flagged datacenter IPs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg python3 python3-venv python3-pip wget && \
     python3 -m venv /app/fast-whisper-env && \
     /app/fast-whisper-env/bin/pip install --no-cache-dir --upgrade \
-        youtube-transcript-api yt-dlp "curl_cffi>=0.10,<0.16" faster-whisper && \
+        youtube-transcript-api yt-dlp "curl_cffi>=0.10,<0.16" faster-whisper \
+        bgutil-ytdlp-pot-provider && \
     rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production

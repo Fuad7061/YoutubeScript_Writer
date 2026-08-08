@@ -10,7 +10,7 @@ bot-blocking datacenter/VPS egress IPs.
 CLI Usage:
   python3 transcript.py <url> [allow_whisper=true] [whisper_model=small]
 """
-import re, json, html, sys, time, urllib.parse, urllib.request
+import os, re, json, html, sys, time, urllib.parse, urllib.request
 from youtube_transcript_api import (
     YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled,
     VideoUnavailable, CouldNotRetrieveTranscript,
@@ -37,6 +37,12 @@ def _ydl_opts(extra=None):
         "retries": 5,
         "extractor_args": {"youtube": {"player_client": _YDL_PLAYER_CLIENTS}},
     }
+    # Self-hosted PO token provider (bgutil-ytdlp-pot-provider container) —
+    # defeats the "Sign in to confirm you're not a bot" check on flagged
+    # datacenter IPs. Without BGUTIL_POT_URL set, yt-dlp runs as before.
+    pot_url = os.environ.get("BGUTIL_POT_URL")
+    if pot_url:
+        opts["extractor_args"]["youtubepot-bgutilhttp"] = [f"base_url={pot_url}"]
     if extra:
         opts.update(extra)
     return opts
